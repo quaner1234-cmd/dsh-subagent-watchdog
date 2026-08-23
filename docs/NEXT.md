@@ -1,73 +1,45 @@
-# NEXT — fix duplicate-end guard, then run one live recovery
+# NEXT — verify an explicit durability checkpoint before cold resume
 
-Status: the duplicate-end review finding below is FIXED — the guard now keeps a
-per-chain `pending`/`delivered` state (`lib/index.js`), and AC9b delivers two
-genuine `subagent/end` events for the same child while the first recovery
-decision is parked in-flight, asserting all three required outcomes. Suite: 30
-scenarios over both artifacts, all passing. The live end-to-end recovery in
-"Then" below was executed on a real `cordis`-preset host and **diverged**: the
-official `followup()` seam rejected the continuation because the settled child's
-durable log had not been flushed yet (`NOT_RESUMABLE`). Evidence and analysis:
-[DSH-SEAMS.md](DSH-SEAMS.md) §8. The alternative synchronous live seam
-(enqueue via `Agent.followup()` during `turn/end`, before the loop's inbox
-check) was investigated with an instrumented live probe and **ruled out** —
-the inbox splice is itself a session append and the runtime's reentrancy guard
-throws first: [DSH-SEAMS.md](DSH-SEAMS.md) §9. Next decision needed in §8
-(open questions A/B, now narrowed by §9) before any code changes;
-distribution work below stays blocked behind it.
+Status: v0.1 product code is unchanged and live-blocked on `@deepseek-ai/dsh` 0.1.1-rc.2. Two recovery paths are now ruled out by live evidence:
 
-Read [../AGENTS.md](../AGENTS.md) and [DSH-SEAMS.md](DSH-SEAMS.md) first. Do not broaden product scope.
+1. `subagent/end` → immediate official `subagents.followup()` fails with `NOT_RESUMABLE` because the freshly settled child is no longer live and its physical log has not yet caught up (`DSH-SEAMS.md` §8).
+2. `session/event: turn/end` → synchronous live `Agent.followup()` cannot enqueue because inbox mutation performs a nested session append and hits the session reentrancy guard (`DSH-SEAMS.md` §9).
 
-## Blocking review finding
+Do not modify product code yet. Do not add timers, polling, custom persistence, private runtime APIs, or another LLM.
 
-The current `engaged` set conflates two states:
+## One remaining clean seam to test
 
-1. the first `max-tokens` end event has been accepted and the async durable check / `followup()` decision is still in flight;
-2. the one watchdog continuation has actually been delivered/spent and a later activation has failed again.
+Test whether an explicit **official durability checkpoint** can close the §8 gap without changing the product contract.
 
-In `lib/index.js`, once `engaged.has(childId)` is true, another `subagent/end` with `max-tokens` or `error` immediately calls `notifyOnce(...)`. Therefore a true duplicate delivery of the *original* end event, arriving while the first recovery decision is still pending, can produce a false "recovery failed" parent notice before any recovery activation has happened.
+Relevant public runtime facts to verify on the installed host before probing:
 
-The current AC9 test does not actually exercise duplicate `subagent/end` delivery: it calls `resolve()` twice on the same Promise (`child.settle('max-tokens')` twice). A Promise resolves only once, so the lifecycle emitter only produces one real end event. The test proves duplicate Promise settlement is harmless, not duplicate event delivery.
+- `session/event` receives the live `Session` object after the event is committed.
+- `ctx.sessions.flush(session)` is the public awaited durability checkpoint.
+- the first-party persistence backend treats a requested `session/flush` as an immediate quiescence barrier for buffered writes.
 
-## Required fix
+Hypothesis:
 
-Keep the minimal product behavior unchanged:
+> When a continuable child reaches its terminal turn while its Session is still live, start exactly one `ctx.sessions.flush(childSession)` checkpoint. Do **not** enqueue work inside the `session/event` callback. After the child settles and the checkpoint has resolved, call the existing official `subagents.followup()` seam. If the checkpoint made the descriptor durable, cold resume should now succeed using the same durable child id.
 
-> A native continuable child ending in explicit `max-tokens` is automatically continued once. Only if the recovery activation later ends in `max-tokens` or explicit error does the watchdog notify the parent and stop.
+This is intentionally different from the ruled-out §9 path: `flush()` is a durability barrier, not an inbox/session append, and the actual follow-up happens only after the append dispatch has finished.
 
-Implement the smallest state model that distinguishes at least:
+## Probe first; no product patch
 
-- first failure / recovery decision in flight;
-- continuation successfully delivered (recovery spent);
-- recovery activation failed again / notify once.
+Use a disposable dynamic probe on the `cordis` preset. Prefer a cheap continuable child that completes quickly if the persistence/cold-resume mechanics are independent of stop reason; only burn another 32,768-token max-tokens child if needed to disambiguate behavior.
 
-Do not add timers, persistence of our own, UI, heuristics, or another LLM. Preserve the durable `subagent-watchdog` marker for restart safety.
+The probe must establish all of the following:
 
-## Test requirement
+1. calling `ctx.sessions.flush(session)` from the terminal `session/event` observation is admitted and does not hit the append reentrancy guard;
+2. the flush promise resolves;
+3. after settlement, `sessionPersistence.inspect(childId)` / the physical log contains the continuable descriptor needed by `coldResume`;
+4. one official `subagents.followup(parent, childId, …)` after that flush succeeds;
+5. the child resumes under the **same durable session id** in a new activation epoch;
+6. no timer, polling loop, custom storage, or private API is required.
 
-Replace or supplement AC9 with a test that causes the watchdog listener to receive two genuine `subagent/end` events for the same child/original epoch while the first async recovery decision is still pending.
+If any of these fail, stop and document the discrepancy. Do not patch around it.
 
-Assert all three:
+If all pass, record the evidence in `DSH-SEAMS.md`, commit/push, and only then redesign the v0.1 implementation around the checkpoint-before-followup sequence and run one final real max-tokens end-to-end acceptance test.
 
-1. exactly one child `followup()` is attempted;
-2. no parent failure notice is emitted merely because of the duplicate original end event;
-3. a genuinely later recovery activation that ends in `max-tokens` or `error` still emits exactly one parent notice and never triggers a second continuation.
+## Kill condition
 
-Run the complete suite against both artifacts again.
-
-## Then: one live end-to-end recovery
-
-Only after the duplicate-end test passes:
-
-1. define/run the dynamic package once on an interactive `cordis`-preset host;
-2. create a real native continuable child that reliably terminates with `max-tokens`;
-3. observe the watchdog deliver exactly one official `subagents.followup()` continuation;
-4. verify the child resumes in the same durable conversation;
-5. verify no loop/duplicate notice occurs;
-6. record the observed evidence in `DSH-SEAMS.md` and commit/push.
-
-If the live result differs from the local harness, stop and document the discrepancy rather than patching around it.
-
-## Distribution after the live test
-
-Do not publish yet. The repository still lacks the installable bundle metadata (`package.json` with `dsh.bundle`, `cordis.patch.yml`) and README/discovery metadata. After the live recovery passes, the next phase is packaging + npm/GitHub install verification + `dsh-plugin` topic + awesome-list submission.
+If the explicit official flush barrier cannot make immediate cold resume reliable, stop pursuing automatic max-token recovery for v0.1 on this runtime. Do not degrade into a notification-only plugin: native DSH already reports these terminal outcomes. At that point document the upstream runtime limitation and reconsider the product rather than adding timing heuristics.
