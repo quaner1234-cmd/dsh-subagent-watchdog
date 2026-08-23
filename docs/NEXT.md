@@ -1,4 +1,4 @@
-# NEXT — npm published; GitHub v0.1.0 release explicitly authorized
+# NEXT — npm published; GitHub v0.1.0 metadata/tag/release executed
 
 Status: `dsh-subagent-watchdog@0.1.0` is live on the public npm registry and the public install path has been verified from a fresh isolated DSH profile. Feature development remains stopped.
 
@@ -42,6 +42,30 @@ Execute exactly these actions, then STOP:
 - No product-code changes.
 - No npm republish/version change.
 - No awesome-list submission yet.
+
+## GitHub publication record — executed 2026-08-23T13:45Z
+
+The authorized GitHub publication step was executed and every artifact was
+independently re-read from the GitHub API immediately after creation:
+
+- Repository description set exactly to the staged copy in
+  `docs/RELEASE-COPY.md` (API read-back matched byte-for-byte).
+- Topics set exactly to `cordis`, `dsh`, `dsh-plugin`, `max-tokens`,
+  `subagent`, `watchdog` (API read-back returned precisely these six).
+- Lightweight tag `v0.1.0` created locally and pushed; the API resolves
+  `refs/tags/v0.1.0` to exactly `feacda5594a276cbdd9fb2ba8262eaf1585865fb`,
+  the npm-published `gitHead` (registry re-checked after tagging).
+- Release published (not draft, not prerelease):
+  https://github.com/quaner1234-cmd/dsh-subagent-watchdog/releases/tag/v0.1.0 —
+  "v0.1.0 — auto-continue-once recovery for max-tokens subagents"; notes are
+  calibrated per `README.md` and `docs/PROTOCOL-DEVIATION-2026-08-23.md`.
+
+No product code changed, no npm republish, no tag movement, and no
+awesome-dsh-plugin submission was performed in this step.
+
+Operational note: the sandboxed agent shells cannot read gh's keyring-held
+OAuth token (macOS keychain denial), so the `gh api` calls for this step ran
+unsandboxed with explicit user approval; git operations used SSH as before.
 
 ## Later — awesome-list, not yet authorized
 
