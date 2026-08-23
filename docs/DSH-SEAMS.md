@@ -14,6 +14,16 @@ nothing was patched.**
 plus an instrumented live probe — the inbox splice is itself a session append, so the
 runtime's reentrancy guard throws before anything is enqueued. The §8 blocker stands;
 no product code was touched.**
+**§10 records the `docs/NEXT.md` durability-checkpoint probe: one official
+`ctx.sessions.flush(childSession)` started from the terminal `session/event`
+observation, with the one official `subagents.followup()` deferred until after
+settlement + checkpoint resolution, closed the §8 gap on a real cheap continuable
+child — all six probe criteria passed (descriptor durable in the physical log,
+cold resume accepted, same session id resumed in a second activation epoch). It also
+surfaced a second, independent blocker for the sandboxed product code: the hand-rolled
+never-abort signal stub is rejected by `AbortSignal.any` inside the cold-resume path.
+v0.1 product code remains untouched; the checkpoint-before-followup redesign is now
+evidence-backed.**
 
 Runtime under inspection: `@deepseek-ai/dsh` **0.1.1-rc.2** (the process serving this
 session), running the **`standard`** agent preset (confirmed from this session's own
@@ -711,3 +721,105 @@ and §8's flush latency makes the race unattractive).
 - §8.4 observability note, amended: reachable diagnostics ARE possible from dynamic
   plugins via dynamically registered model tools (used here); `console.warn/error`
   sinks remain unreachable.
+
+---
+
+## 10. Official durability-checkpoint probe — ALL SIX CRITERIA PASS (§8 gap closed)
+
+Executed against the same live host (`@deepseek-ai/dsh` **0.1.1-rc.2**), testing
+exactly the `docs/NEXT.md` hypothesis: *one* `ctx.sessions.flush(childSession)`
+checkpoint started from the terminal `session/event` observation, with NO enqueue
+work inside the callback, and the single official `subagents.followup()` deferred
+until after settlement + checkpoint resolution.
+
+### 10.1 Pre-probe source verification (installed runtime, method of §0)
+
+- `SessionStore.flush(session)` (`dsh-session/lib/index.js` ~L1791): requires a LIVE
+  session (`liveEntryFor` throws otherwise — satisfied during the child's own
+  terminal append dispatch), collects the awaited parallel `session/flush`
+  listeners, awaits all, returns whether any participated, and performs **no
+  append** — it cannot hit the §9 reentrancy guard.
+- First-party persistence backend subscribes `session/flush → this.flush(session)`
+  (`dsh-session-persistence/lib/index.js` ~L1158); its coordinator `flush()`
+  cancels the automatic write wait, awaits `init`, then drains the write-behind
+  queue through `appendCore` → backend append ("append resolves only after
+  durability") — the immediate quiescence barrier NEXT.md described.
+- `coldResume` (`dsh-subagent/lib/index.js` ~L1136–1181) wraps exactly two failure
+  sites as `NOT_RESUMABLE "subagent … is unavailable"`: a throwing
+  `persistence.inspect()` (~L1151) and a non-SubagentError from `materialize()`
+  (~L1177); the descriptor-fold rejection (~L1157) has the distinct §8 wording.
+- `agentLoop.resumeWith` (`dsh-agent-loop/lib/index.js` ~L1292) fuses the caller
+  signal via `AbortSignal.any([options.signal, ownerAbort.signal,
+  ownership.signal])` — `options.signal` must be a REAL `AbortSignal`.
+
+### 10.2 Probe mechanics
+
+Disposable dynamic host plugin (`fprobe-3`, packages pkg-5 → pkg-7, honest
+iteration log as in §9.2). Root-level `subagent/start|end` + `session/event`
+listeners; evidence ring buffer read through one dynamically registered model tool
+(`flushprobe_control`: arm-next-start / arm / read). Sequence per armed cheap
+continuable child ("reply ok"): on first target `turn/end` → synchronously kick
+`sessions.flush(childSession)` (record admitted/threw; no await inside dispatch);
+on `subagent/end` → microtask chain: await flush promise →
+`sessionPersistence.inspect()` + `readRaw()` → fold descriptor → ONE official
+`subagents.followup(parent, childId, …)`. Event-driven throughout: no timers, no
+polling, no custom storage, no private APIs.
+
+Iterations:
+1. **pkg-5**: criteria 1–3 passed on child `52405d4c…`; `followup` threw
+   `NOT_RESUMABLE` with the NEW wording *"is unavailable"* (not §8's wording).
+2. **pkg-6** (cause-chain instrumentation), child `5815ec0b…`: criteria 1–3
+   replicated; cause chain captured — `SubagentError NOT_RESUMABLE "is
+   unavailable"` caused by `TypeError ERR_INVALID_ARG_TYPE: "signals[0] is not of
+   type AbortSignal."`. The probe's sandbox stub signal (the §6.5-minimal shape
+   used by [../plugin/watchdog.host.js](../plugin/watchdog.host.js)) satisfies the
+   persistence consumer but is rejected by `AbortSignal.any` inside
+   `agents.resume()`. §8 never reached this layer because it failed earlier at
+   descriptor folding. Probe artifact, not a runtime discrepancy.
+3. **pkg-7** (real caller signal captured from the control tool's own dispatch —
+   `fuseToolSignals` proves a fused dispatch signal stays non-aborted after the
+   call completes; dispose only removes listeners), child `8d9da322…`: full pass.
+
+### 10.3 Evidence vs the six criteria (child `8d9da322-6831-44e4-bd98-8b14135c4613`)
+
+1. **Flush admitted from the terminal observation, no reentrancy guard** —
+   `flush-kicked {admitted:true}` recorded synchronously inside the `turn/end`
+   dispatch; no throw. (3/3 children)
+2. **Flush promise resolves** — `flush-resolved {participated:true}` and
+   `pre-followup-flush-state {resolved}`. (3/3 children)
+3. **Durable descriptor present after settlement** — decision-time
+   `sessions.get(childId)` was already undefined (`liveAtInspect:false`), so
+   `inspect()` read the PHYSICAL log — the exact path `coldResume` takes — and
+   folded `descriptorMode:"continuable"` over 30 events; `readRaw()` confirmed the
+   physical artifact byte-level (87,013 bytes / 30 lines /
+   contains `subagent/descriptor`). §8's empty-log window is closed by the
+   checkpoint. (3/3 children; 35/32/30 events respectively)
+4. **One official followup after settlement + flush succeeds** —
+   `followup-signal {real:true, aborted:false}`, then `followup-delivered
+   {messageId:"09867be0-3ea3-48ea-884b-2af4dcc6562e"}`.
+5. **Same durable session id, new activation epoch** — two `subagent/start`
+   events for the SAME id with distinct runIds
+   (`e137fde0…` → `8dde67b6…`); the resumed epoch ran its turn to `completed`
+   (`epoch-end {stopReason:"completed", runId:"8dde67b6…"}`) and delivered the
+   second verbatim settlement notice to this session.
+6. **No timer/polling/custom storage/private API** — listeners + promise
+   microtasks + official services only (`sessions.flush`,
+   `sessionPersistence.inspect/readRaw`, `subagents.followup`).
+
+### 10.4 Consequences and constraints for the v0.1 redesign
+
+- The §8 blocker mechanism is CONFIRMED and CLOSED: checkpoint-before-followup
+  makes freshly settled continuable children cold-resumable through the official
+  seam, deterministically, inside the existing event-driven shape. No timers, no
+  polling, no custom persistence.
+- NEW hard constraint surfaced: the recovery path requires a REAL `AbortSignal`
+  for `followup(options.signal)`. Inside the dynamic-package sandbox there is no
+  `AbortController` global, and the hand-rolled stub throws
+  `TypeError … "signals[0] is not of type AbortSignal"` once cold resume reaches
+  `agents.resume()`. Official sources exist (a dynamic tool's own dispatch signal
+  was proven sufficient here); the product must adopt one deliberately rather
+  than shipping the stub.
+- Probe state: `fprobe-3` stopped after the experiment (pkg-5/6/7 retained);
+  children `52405d4c…` and `5815ec0b…` were never touched after their natural
+  completion; `8d9da322…` received exactly the probe's one continuation and
+  completed it. No repo product file was modified for any probe iteration.
