@@ -67,6 +67,17 @@ durable-marker verification → one official `subagents.followup()` carrying a
 fresh real `AbortController` signal. The duck-typed signal stub is gone (§10
 proved `AbortSignal.any` rejects it).
 
-Remaining before publish — distribution only (no feature work):
-README + package metadata polish + local install recheck + npm publication +
-GitHub description/topics (`dsh-plugin`) + ecosystem submission/discovery work.
+Status: **release candidate ready** (2026-08-23). The public
+[README](README.md) and package metadata are in place; every docs/NEXT.md
+Step-2 check passed: 38/38 local scenarios (also on a fresh clone), a clean
+11.0 kB tarball shipping exactly `LICENSE`, `README.md`, `cordis.patch.yml`,
+`lib/index.js`, `package.json`, and a real-tarball install through the official
+`dsh plugin --profile headless add <tarball>` path into an isolated scratch
+profile with verified bundle reconciliation, byte-identical installed files,
+loader-shape import, and a composed boot tree that mounts the inserted row.
+Runtime behavior is unchanged from the §12 live acceptance. Staged publication
+copy lives in [docs/RELEASE-COPY.md](docs/RELEASE-COPY.md); nothing external
+has been mutated. The full record is in [docs/NEXT.md](docs/NEXT.md).
+
+Remaining — external publication only, gated on explicit user approval:
+npm publish + GitHub description/topics + ecosystem submission/discovery work.

@@ -1,8 +1,18 @@
 # NEXT — release prep only; stop before external publication
 
-Status: v0.1 feature development is complete at commit `d1427cb`. The production-shaped packaged mount passed the final live acceptance: a real continuable child ended with explicit `max-tokens`, the watchdog checkpointed durability, cold-resumed the same durable child session id under a fresh runId 68 ms after settlement, delivered exactly one durable watchdog continuation marker, and the recovered activation completed normally. Local suite: 38/38 scenarios over both artifacts. See `docs/DSH-SEAMS.md` §12.
+Status: **release candidate ready** (2026-08-23). v0.1 feature development is complete at commit `d1427cb`. The production-shaped packaged mount passed the final live acceptance: a real continuable child ended with explicit `max-tokens`, the watchdog checkpointed durability, cold-resumed the same durable child session id under a fresh runId 68 ms after settlement, delivered exactly one durable watchdog continuation marker, and the recovered activation completed normally. Local suite: 38/38 scenarios over both artifacts. See `docs/DSH-SEAMS.md` §12.
 
-Do not add product features. Do not publish to npm, create a GitHub release, or submit to an ecosystem/awesome list in this step. Prepare a release candidate and stop for review.
+Release-candidate record (all Step-2 checks pass):
+
+1. `npm test` — 38/38 green, re-confirmed on a fresh `/tmp` clone.
+2. `npm pack` tarball `dsh-subagent-watchdog-0.1.0.tgz` — 11.0 kB packed / 31.4 kB unpacked, exactly 5 files: `LICENSE`, `README.md`, `cordis.patch.yml`, `lib/index.js`, `package.json`. No tests, probes, logs, or local artifacts.
+3. Installed that real tarball through the ordinary path into an isolated scratch profile (`DSH_HOME=.local-run/rc-home2 dsh plugin --profile headless add <tarball>`): bundle-stack reconciliation appended the package, installed files are byte-identical to the repo artifacts, loader-shape import OK (`exports.default ?? exports` → `{name, inject:['subagents'], apply}`), and `--dump-config` shows the composed boot tree mounting the inserted row (`id: subagent-watchdog`). Runtime behavior is byte-identical to the §12 live acceptance, so no burn was repeated.
+4. Fresh clone runs the full suite green; the shipped tarball installs standalone (single `file:` tarball dependency, no workspace links, zero runtime deps).
+5. `git status` clean of generated/runtime artifacts (`.local-run/`, `.pnpm-store/`, `.DS_Store` ignored).
+
+Publication copy staged in [docs/RELEASE-COPY.md](docs/RELEASE-COPY.md). Nothing external has been mutated: no npm publish, no GitHub description/topics change, no tag/release, no awesome-list PR.
+
+Do not add product features. Do not publish to npm, create a GitHub release, or submit to an ecosystem/awesome list in this step. The release candidate now stops for user review; any external publication requires explicit user approval in a later step.
 
 ## Step 1 — README and package metadata
 

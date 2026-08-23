@@ -2,6 +2,19 @@
   "name": "dsh-subagent-watchdog",
   "version": "0.1.0",
   "description": "DSH plugin: safe auto-continue-once recovery for native continuable subagents that end with explicit max-tokens termination. No timers, no polling, no private APIs.",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "cordis",
+    "subagent",
+    "max-tokens",
+    "auto-continue",
+    "watchdog"
+  ],
+  "homepage": "https://github.com/quaner1234-cmd/dsh-subagent-watchdog#readme",
+  "bugs": {
+    "url": "https://github.com/quaner1234-cmd/dsh-subagent-watchdog/issues"
+  },
   "type": "module",
   "repository": {
     "type": "git",
