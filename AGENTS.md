@@ -35,12 +35,29 @@ No dashboard, no team manager, no DAG, no heuristic stuck detector, no custom or
 
 ## Status
 
-The original local implementation and duplicate-end guard are covered by the existing 30-scenario suite, but the product code has **not yet been redesigned** around the live-verified checkpoint-before-followup sequence and must not be published as-is.
+v0.1 has been **redesigned around the live-verified checkpoint-before-followup
+sequence** and is green locally: `node --test test/watchdog.test.mjs` passes 38
+scenarios over both artifacts (`lib/index.js` + regenerated
+`plugin/watchdog.host.js`) against real cordis/dsh-subagent/dsh-session dispatch,
+with the recovery seam spied at the official call boundary. Sources:
+[lib/index.js](lib/index.js), [plugin/watchdog.host.js](plugin/watchdog.host.js),
+[test/watchdog.test.mjs](test/watchdog.test.mjs).
 
-Live findings:
+Live findings that shaped this design:
 
 - §8: immediate `subagents.followup()` after settlement failed because the freshly settled child's physical log lagged and cold resume could not fold its continuable descriptor.
 - §9: trying to enqueue a live `Agent.followup()` from the terminal `session/event` callback is impossible because inbox mutation performs a nested session append and hits the session reentrancy guard.
 - §10: one official `ctx.sessions.flush(childSession)` started from the terminal session event closes the durability gap. After settlement + checkpoint resolution, official `subagents.followup()` successfully cold-resumed the **same durable child session id** in a new activation epoch. No timers, polling, custom storage, or private APIs were required.
 
-One implementation blocker remains before redesigning the product code: `subagents.followup(..., { signal })` must receive a **real `AbortSignal`**. The current sandbox fallback in `neverAbortSignal()` is only a duck-typed stub and is rejected by `AbortSignal.any()` once cold resume reaches `agents.resume()`. The next step is defined in [docs/NEXT.md](docs/NEXT.md).
+The recovery pipeline now runs: terminal `turn/end { kind: 'max-tokens' }` → one
+official `ctx.sessions.flush(childSession)` checkpoint started while the Session
+is live → normal settlement → checkpoint resolution → restart-safe
+durable-marker verification → one official `subagents.followup()` carrying a
+fresh real `AbortController` signal. The duck-typed signal stub is gone (§10
+proved `AbortSignal.any` rejects it).
+
+Remaining before publish: the one final real max-tokens end-to-end acceptance run
+on a production-shaped mount (see [docs/NEXT.md](docs/NEXT.md)). Note that a
+dynamically mounted dev package cannot construct the attempt signal — the dynamic
+sandbox masks `AbortController` — so recovery there fails contained by design;
+the final acceptance must run on the packaged composition shape.

@@ -1,10 +1,8 @@
 # NEXT — resolve a production-grade real AbortSignal, then patch checkpoint-before-followup
 
-Status: the §10 live probe passed all six criteria. The durability gap is closed by one official `ctx.sessions.flush(childSession)` checkpoint started from the terminal session event, followed after settlement + checkpoint resolution by official `subagents.followup()`. The product code has **not** yet been updated to this sequence.
+Status: **resolved and implemented.** The §10 live probe passed all six criteria; the real-`AbortSignal` blocker was resolved against the installed runtime (see "Resolution record" below); the product code has been redesigned around checkpoint-before-followup and is green locally — `node --test test/watchdog.test.mjs`, 38 scenarios over both artifacts (`lib/index.js` + regenerated `plugin/watchdog.host.js`). The expensive final real `max-tokens` end-to-end acceptance has **not** been run yet and is the only remaining pre-publish step.
 
-One blocker remains before implementation: `subagents.followup(..., { signal })` must receive a **real `AbortSignal`**. The current sandbox fallback in `neverAbortSignal()` is a duck-typed object; live cold resume proved that `AbortSignal.any()` inside `agents.resume()` rejects it.
-
-Do not publish yet. Do not add timers, polling, custom persistence, private runtime APIs, or another LLM.
+One blocker remained before implementation: `subagents.followup(..., { signal })` must receive a **real `AbortSignal`**. The previous sandbox fallback in `neverAbortSignal()` is removed.
 
 ## Current blocking question
 
@@ -40,3 +38,23 @@ Do **not** run the expensive final real `max-tokens` end-to-end acceptance test 
 ## Kill condition
 
 If no production-available real `AbortSignal` source satisfying the five criteria exists in the normal plugin execution path, stop and document that limitation. Do not work around it with a fake signal, timer, polling loop, private API, or interactive tool-call dependency. Reconsider the product boundary instead.
+
+## Resolution record (this step)
+
+**Signal source — verified against the installed runtime (`@deepseek-ai/dsh` 0.1.1-rc.2):**
+
+- The five criteria are satisfied by a fresh `new AbortController().signal` created inside the plugin's own recovery attempt. (1) It is a genuine host-realm `AbortSignal` accepted by the `AbortSignal.any()` fusion in `agentLoop.resumeWith` (`dsh-agent-loop/lib/index.js` ~L1292). (2) It needs no model/tool call: first-party plugins construct controllers in normal execution — `dsh-tool-subagent/lib/index.js` L257 wraps its background one-shot run exactly this way. (3) The watchdog never aborts it, so it stays valid and non-aborted across the whole terminal-event → flush → settlement → admission window (§10's probe observed a captured signal still non-aborted minutes later). (4) It does not abort because an event callback returned; teardown-cancellation is acceptable-but-not-required for a sub-second attempt. (5) `AbortController` is a standard host primitive of the packaged plugin environment.
+- Environment boundary, verified not assumed: the dynamic-package dev sandbox (`dsh-cordis-host-runner` `createSandbox`) provides only `ctx/harness/console/btoa/atob/TextEncoder/TextDecoder` plus Node-API traps; VM contexts carry no platform globals, so `AbortController` is unavailable there. No capture-free official signal source exists in that realm (cordis core exposes no fiber signal; no DSH service returns one). Consequence: a dynamically mounted dev package fails recovery contained at signal construction; the final live acceptance must run on the packaged composition shape, which is the honest production mount anyway.
+- Per NEXT instruction, the duck-typed `neverAbortSignal()` fallback was deleted outright — no compatibility shim remains (`grep neverAbortSignal` over both artifacts: 0 hits).
+
+**Implementation (smallest redesign, all ten steps done):**
+
+1. Terminal `turn/end { kind: 'max-tokens' }` starts exactly one `ctx.sessions.flush(childSession)` via `startDurabilityCheckpoint`, gated on chain-not-engaged + mode ≠ one-shot + no checkpoint yet; nothing is enqueued or followed up inside the callback.
+2. Continue-once/idempotency guard semantics unchanged (`pending`/`delivered`/`notified`, durable-marker scan).
+3. On the matching `subagent/end`, the decision awaits the recorded checkpoint before the restart-safe durable verification, then calls `subagents.followup()` once with the attempt-scoped real signal (shared by the persistence inspection and the followup).
+4–5. Checkpoint failure → `checkpoint-failed` notice once, chain spent, no retry; followup failure → existing mark-before-act `delivery-failed`; recovered-epoch failures → one notice, never continued again. Unverifiable mode stays fail-closed silent (AC7a preserved).
+6–7. Stub removed; `plugin/watchdog.host.js` regenerated via `scripts/sync-dynamic.mjs` (byte-derived test enforces alignment).
+8–9. Suite extended to 38 scenarios: AC11 (one checkpoint on the live child session, strictly before followup), AC12 (rejected checkpoint → one `checkpoint-failed` notice, no followup, never retried), AC12b (synchronous admission throw contained), AC13 (duplicate genuine end while the checkpoint is pending → one continuation, no false notice), real-signal assertions at the followup boundary (AC1) and the inspection boundary (AC8). All green over both artifacts.
+10. This file, `AGENTS.md`, and `DSH-SEAMS.md` §11 carry the evidence; committed and pushed.
+
+**Still open:** only the final real `max-tokens` end-to-end acceptance run on a production-shaped (packaged) mount.

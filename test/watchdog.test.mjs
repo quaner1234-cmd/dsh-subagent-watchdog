@@ -127,8 +127,10 @@ async function makeHost(t, { persistenceEvents } = {}) {
 	if (persistenceEvents !== undefined) {
 		root.provide('sessionPersistence', {
 			inspectCalls: [],
-			async inspect(id) {
+			inspectSignals: [],
+			async inspect(id, signal) {
 				this.inspectCalls.push(id)
+				this.inspectSignals.push(signal)
 				return { meta: {}, events: persistenceEvents(id) }
 			},
 		})
@@ -266,7 +268,8 @@ for (const artifact of artifacts) {
 		assert.ok(/continue/i.test(instruction), 'asks the child to continue its task')
 		assert.equal(call.options.source.kind, 'subagent-watchdog', 'tagged for the durable guard marker')
 		assert.equal(call.options.source.form, 'relay')
-		assert.equal(typeof call.options.signal?.throwIfAborted, 'function', 'passes a cancellation signal')
+		assert.ok(call.options.signal instanceof AbortSignal, 'passes a REAL host AbortSignal (AbortSignal.any-compatible, §10)')
+		assert.equal(call.options.signal.aborted, false, 'the attempt signal is fresh and non-aborted')
 		// The runtime's settlement notice covers continuable parents; no extra notice.
 		assert.deepEqual(parent.calls, [], 'no parent notice on a successful single continuation')
 	})
@@ -476,6 +479,10 @@ for (const artifact of artifacts) {
 			h.root.get('sessionPersistence').inspectCalls.includes(child.childId),
 			'guard consulted the child’s own durable log',
 		)
+		assert.ok(
+			h.root.get('sessionPersistence').inspectSignals.every((signal) => signal instanceof AbortSignal),
+			'the durable inspection rides the same real attempt signal',
+		)
 		assert.equal(parent.calls.length, 1, 'the still-failing already-recovered chain notifies once')
 		const text = parent.calls[0].message.content[0].text
 		assert.ok(text.includes(child.childId))
@@ -581,6 +588,146 @@ for (const artifact of artifacts) {
 		await settleAsync()
 		assert.equal(h.followupCalls.length, 1)
 		assert.equal(parent.calls.length, 1)
+	})
+
+	test(`[${artifact.id}] AC11: exactly one durability checkpoint starts at the terminal turn/end and settles before followup`, async (t) => {
+		const h = await makeHost(t)
+		await h.root.plugin(await artifact.load())
+		const parent = makeAgent('parent-1', 'idle')
+		h.agentsStore.register(parent)
+
+		const trace = []
+		const originalFlush = h.sessions.flush.bind(h.sessions)
+		h.sessions.flush = (session) => {
+			trace.push(`flush:${session.id}`)
+			return originalFlush(session)
+		}
+		const baseFollowup = h.subagents.followup
+		h.subagents.followup = async (...args) => {
+			trace.push('followup')
+			return baseFollowup(...args)
+		}
+
+		const child = spawnOneShot(h, parent, {
+			events: [descriptor('continuable'), turnEnd({ kind: 'max-tokens' })],
+		})
+		await child.ensureStarted
+		child.settle('max-tokens')
+		// A pathological duplicate settlement must not re-run the checkpoint.
+		child.settle('max-tokens')
+		await settleAsync()
+
+		assert.equal(h.followupCalls.length, 1)
+		assert.deepEqual(
+			trace,
+			[`flush:${child.childId}`, 'followup'],
+			'the checkpoint ran once, on the live child session, strictly before the continuation',
+		)
+	})
+
+	test(`[${artifact.id}] AC12: rejected checkpoint → one notice, no followup, never retried`, async (t) => {
+		const h = await makeHost(t)
+		await h.root.plugin(await artifact.load())
+		const parent = makeAgent('parent-1', 'idle')
+		h.agentsStore.register(parent)
+
+		let failFlush = true
+		const originalFlush = h.sessions.flush.bind(h.sessions)
+		h.sessions.flush = (session) => (failFlush
+			? Promise.reject(new Error('backend write failed'))
+			: originalFlush(session))
+
+		const first = spawnOneShot(h, parent, {
+			events: [descriptor('continuable'), turnEnd({ kind: 'max-tokens' })],
+		})
+		await first.ensureStarted
+		first.settle('max-tokens')
+		await settleAsync()
+
+		assert.equal(h.followupCalls.length, 0, 'no continuation without a settled checkpoint')
+		assert.equal(parent.calls.length, 1, 'exactly one failure notice')
+		const text = parent.calls[0].message.content[0].text
+		assert.ok(text.startsWith('[watchdog]'))
+		assert.ok(text.includes(first.childId), 'notice names the child')
+		assert.ok(text.includes('checkpoint'), 'notice names the failed stage')
+		assert.ok(text.includes('No further automatic recovery'), 'states it will stop intervening')
+
+		// A genuinely later failing epoch neither retries nor re-notifies.
+		failFlush = false
+		const second = spawnEpoch(h, parent, first.session, {
+			events: [turnEnd({ kind: 'max-tokens' }, 2)],
+		})
+		await second.ensureStarted
+		second.settle('max-tokens')
+		await settleAsync()
+		assert.equal(h.followupCalls.length, 0, 'the spent chain never continues again')
+		assert.equal(parent.calls.length, 1, 'the failure notice stays capped at once per chain')
+	})
+
+	test(`[${artifact.id}] AC12b: synchronously throwing checkpoint admission is contained`, async (t) => {
+		const h = await makeHost(t)
+		await h.root.plugin(await artifact.load())
+		const parent = makeAgent('parent-1', 'idle')
+		h.agentsStore.register(parent)
+
+		h.sessions.flush = () => {
+			throw new Error('session "child-x" is not live in this store')
+		}
+
+		const child = spawnOneShot(h, parent, {
+			events: [descriptor('continuable'), turnEnd({ kind: 'max-tokens' })],
+		})
+		await child.ensureStarted
+		child.settle('max-tokens')
+		await settleAsync()
+
+		assert.equal(h.followupCalls.length, 0, 'admission failure stops before any delivery attempt')
+		assert.equal(parent.calls.length, 1, 'one honest failure notice')
+		assert.equal(h.nextChild, 1, 'handler survived a synchronous checkpoint throw')
+	})
+
+	test(`[${artifact.id}] AC13: duplicate genuine end while the CHECKPOINT is pending → one continuation, no false notice`, async (t) => {
+		const h = await makeHost(t)
+
+		// Park the checkpoint so the first recovery decision is observably
+		// waiting on durability while a second genuine end event arrives.
+		let releaseFlush
+		const originalFlush = h.sessions.flush.bind(h.sessions)
+		h.sessions.flush = (session) => new Promise((resolve) => {
+			releaseFlush = () => resolve(originalFlush(session))
+		})
+
+		await h.root.plugin(await artifact.load())
+		const parent = makeAgent('parent-1', 'idle')
+		h.agentsStore.register(parent)
+
+		const first = spawnOneShot(h, parent, {
+			events: [descriptor('continuable'), turnEnd({ kind: 'max-tokens' })],
+		})
+		await first.ensureStarted
+
+		const duplicate = spawnEpoch(h, parent, first.session, { events: [] })
+		await duplicate.ensureStarted
+
+		first.settle('max-tokens')
+		await settleAsync()
+		duplicate.settle('max-tokens')
+		await settleAsync()
+
+		releaseFlush()
+		await settleAsync()
+
+		assert.equal(h.followupCalls.length, 1, 'exactly one continuation once durability settles')
+		assert.deepEqual(parent.calls, [], 'the pending-checkpoint window emits no parent notice')
+
+		const second = spawnEpoch(h, parent, first.session, {
+			events: [turnEnd({ kind: 'max-tokens' }, 2)],
+		})
+		await second.ensureStarted
+		second.settle('max-tokens')
+		await settleAsync()
+		assert.equal(h.followupCalls.length, 1, 'never continued twice')
+		assert.equal(parent.calls.length, 1, 'a genuine repeat failure still notifies once')
 	})
 
 	test(`[${artifact.id}] AC10: failed followup keeps the chain engaged without a second attempt`, async (t) => {
