@@ -1,63 +1,54 @@
-# NEXT — v0.1 implementation plan
+# NEXT — close the single blocking guard, then implement v0.1
 
-Preconditions: read [DSH-SEAMS.md](DSH-SEAMS.md) first; it fixes the verified seams and
-the vocabulary used below. Do not start until its §6 open items are closed.
+Read [../AGENTS.md](../AGENTS.md) and [DSH-SEAMS.md](DSH-SEAMS.md) first.
 
-## 0. Close the open items (blocking)
+## Current product decision
 
-Run on the `cordis` preset via the `cordis-plugin-development` workflow, before any
-`cordis_define`:
+v0.1 has one user-visible job:
 
-1. Confirm listener visibility for a root-mounted dynamic plugin on
-   `subagent/start|end` (scope-carrier composition).
-2. Decide the notice source kind: reuse `subagent-settled` vs a dedicated
-   merge-extensible kind; confirm how unknown kinds render in the UI.
-3. Check whether `dsh-llm-retry` is mounted in production host compositions.
-4. Verify cold-resume ordering: `subagent/start` must fire before the resumed turn's
-   events reach `session/event`, or the child-id filter misses terminal records.
+> When a native **continuable** DSH subagent ends with explicit `max-tokens`, automatically continue that same child conversation once. If recovery does not succeed, stop and tell the parent.
 
-## 1. Author the plugin (dynamic first)
+Use only verified official DSH seams. Do not broaden scope.
 
-One host-plane dynamic Cordis plugin (`cordis_define` → approval → `cordis_run`):
+## Blocking question — verify this first
 
-- Listeners registered inside `apply(ctx)` only: `subagent/start`, `subagent/end`,
-  `session/event` (filtered to `turn/end` for known child session ids).
-- State: run records keyed by `runId`; scalars extracted from payloads only — never
-  stringify live runtime objects.
+A continuable child gets a new activation epoch and new `runId` after `subagents.followup()` cold-resumes/wakes it. Before writing plugin code, determine the smallest reliable identity/guard that answers:
 
-## 2. Detection
+> Has this child task/recovery chain already received its one watchdog continuation?
 
-High-confidence table (from DSH-SEAMS §5): `max-tokens`, `error` (+ folded
-`LlmFailure.code/status/message`), infrastructure rejection (`subagent/end` with
-`stopReason:'error'` from a rejected result promise), `refusal`. Everything else,
-including unknown future variants: silent.
+The guard must prevent a second automatic continuation when any of these occur:
 
-## 3. Parent notification
+- the resumed activation also ends in `max-tokens`;
+- duplicate/repeated `subagent/end` delivery;
+- settlement/report duplication;
+- cold resume creates a new activation `runId`;
+- process/plugin restart or re-mount, if the runtime exposes a durable official way to recover the guard state.
 
-- Mirror the runtime's own delivery pattern: `parent.followup` when idle, `steer`
-  when running. One short user-role message, `[watchdog]`-tagged, ≤4096 bytes:
-  what ended, the structured failure facts when present, and the official next
-  action (`send_message` to continue a continuable child; parent-side re-delegation
-  for one-shot children).
-- Continuable children: stay silent unless adding facts the automatic settlement
-  notice does not already carry (i.e., the structured error code).
+Inspect only the minimum live runtime surfaces needed to answer this. Prefer existing durable child/session metadata or session events over inventing storage. If restart-safe idempotence cannot be achieved with an official seam in v0.1, document the exact limitation and choose the safest fail-closed behavior rather than adding custom persistence.
 
-## 4. Package for distribution
+Record the verified answer in `DSH-SEAMS.md` under a short new section named `v0.1 continue-once guard`.
 
-Promote the validated dynamic plugin into an installable composition row package;
-document installation in the README.
+## Then implement the smallest v0.1
+
+Only after the guard is verified:
+
+1. Listen for native continuable child termination.
+2. Ignore everything except explicit `stopReason: 'max-tokens'`.
+3. If the guard says this child task has not been auto-continued, call the verified official `subagents.followup()` seam with one short continuation instruction that asks the child to continue the unfinished task from its existing conversation state.
+4. Mark/record the one recovery before or atomically with the action so duplicate events cannot trigger another continuation.
+5. If the recovery activation ends again in `max-tokens` or in an explicit provider/runtime error, do not intervene again; notify the parent once.
+6. Normal completion, clean abort, refusal, one-shot children, and unknown stop reasons remain untouched.
 
 ## Acceptance criteria
 
-- A spawned child that terminates on max-tokens produces exactly one watchdog notice
-  to the parent naming `max-tokens`.
-- A child whose model request fails terminally produces one notice carrying the
-  provider-neutral `LlmFailure.code`.
-- Normal completions, clean aborts, and unknown stop reasons produce no notices.
-- The plugin adds no tools, no UI, no persistence, and never calls
-  `followup`/`interrupt`/`start` on any child.
+- One continuable child ending in `max-tokens` is automatically continued exactly once.
+- The same child cannot be auto-continued twice because of a second `max-tokens` epoch or duplicate end event.
+- A successful resumed child completes normally with no extra watchdog action.
+- A resumed child that fails again causes one parent notice and no further recovery.
+- Provider/runtime errors are never auto-retried in v0.1.
+- One-shot subagents are never recovered in v0.1.
+- No UI, dashboard, DAG, team manager, heuristic timeout/stuck detector, custom orchestration layer, or extra LLM is added.
 
-## Explicitly out of scope (v0.1)
+## Distribution is not part of this step
 
-Auto-retry, auto-interrupt, auto-re-delegation, dashboards, team management, DAGs,
-stuck heuristics, custom orchestration.
+Do not spend time on README polish, npm publication, awesome-list submission, screenshots, branding, or discovery metadata until the v0.1 behavior passes the acceptance criteria locally.
