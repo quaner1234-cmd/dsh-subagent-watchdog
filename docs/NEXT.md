@@ -1,67 +1,50 @@
-# NEXT — distribution only
+# NEXT — release prep only; stop before external publication
 
-Status: Steps 1–3 of the previous plan are **complete** at the packaging +
-live-acceptance milestone. The smallest local-installable package exists
-([package.json](../package.json) with `dsh.bundle.patch` +
-[cordis.patch.yml](../cordis.patch.yml); entry remains `lib/index.js`, no build
-step), it installs through the ordinary `dsh plugin --profile <name> add` path,
-and the one final real max-tokens end-to-end acceptance run **passed all seven
-criteria on a production-shaped headless mount** — including a same-session-id
-cold resume 68 ms after settlement under a fresh runId, exactly one durable
-watchdog continuation marker across both inspections, and a healthy recovered
-activation with zero further interventions. Full evidence and the live-found
-`inject: ['subagents']` fix are recorded in docs/DSH-SEAMS.md §12.
+Status: v0.1 feature development is complete at commit `d1427cb`. The production-shaped packaged mount passed the final live acceptance: a real continuable child ended with explicit `max-tokens`, the watchdog checkpointed durability, cold-resumed the same durable child session id under a fresh runId 68 ms after settlement, delivered exactly one durable watchdog continuation marker, and the recovered activation completed normally. Local suite: 38/38 scenarios over both artifacts. See `docs/DSH-SEAMS.md` §12.
 
-Feature development is STOPPED. The next phase is distribution only:
-README + package metadata polish + local install recheck + npm publication +
-GitHub description/topics (`dsh-plugin`) + ecosystem submission/discovery work.
-Do not publish to npm or submit to an awesome list as part of a feature step.
-Do not add product features.
+Do not add product features. Do not publish to npm, create a GitHub release, or submit to an ecosystem/awesome list in this step. Prepare a release candidate and stop for review.
 
-## Step 1 — create the smallest local-installable package — DONE (see §12.1 of DSH-SEAMS.md)
+## Step 1 — README and package metadata
 
-Before writing metadata, inspect the installed DSH plugin-development guidance/runtime and verify the current official bundle/composition format. Do not infer stale package fields or install commands.
+Create the smallest useful public README. The first screen must state the user problem and exact behavior in plain language:
 
-Create only the metadata/files required to mount `lib/index.js` as an ordinary local DSH plugin in the full host process. Prefer the smallest package shape. At minimum verify whether the current runtime requires `package.json`, `dsh.bundle`, and/or `cordis.patch.yml`, and use the verified format.
+> When a native continuable DSH subagent ends because it hit `max-tokens`, Watchdog automatically continues the same child conversation once, then stops. No loops.
 
-Requirements:
+README should include only what a user needs:
 
-1. The production entry remains `lib/index.js`; do not move or rewrite working product logic merely for packaging.
-2. No build step should be necessary for a local install if the runtime accepts the existing JS artifact.
-3. Do not add README/discovery/marketing work yet.
-4. Run the existing 38-scenario suite after packaging; packaging must not change behavior.
-5. Install/mount the plugin locally through the same ordinary plugin path a real user would use (local path/package is fine; do not publish).
+1. What problem it solves and the exact v0.1 scope.
+2. Installation through the verified ordinary DSH plugin path.
+3. What happens on first `max-tokens`, second failure, normal completion, one-shot children, and unsupported/no-persistence environments.
+4. Safety/non-goals: one automatic continuation maximum; no timers, polling, private APIs, extra LLM, dashboard, DAG, or team manager.
+5. Compatibility: explicitly name the DSH runtime version actually live-tested (`@deepseek-ai/dsh 0.1.1-rc.2`) without claiming broader compatibility that has not been tested.
+6. A short verification/evidence section linking to `docs/DSH-SEAMS.md` rather than copying the research log into the README.
 
-## Step 2 — cheap host-shape verification — DONE (probe recorded genuine `AbortController`/`AbortSignal` + `AbortSignal.any` fusion; normal continuable child completed untouched)
+Polish `package.json` only as needed for npm/public discovery. Preserve `name`, `version: 0.1.0`, `main`, `exports`, `files`, `dsh.bundle.patch`, zero dependencies, and no build step unless a verified publishing requirement demands otherwise. Add conventional discovery fields only when accurate (for example `keywords`, `homepage`, `bugs`). Do not make marketing claims unsupported by the live evidence.
 
-Before the final max-token recovery run, prove on the packaged composition mount that:
+## Step 2 — release-candidate checks
 
-- the Watchdog is actually loaded in the ordinary host process;
-- the recovery code sees a genuine standard `AbortController` / `AbortSignal` environment, not the dynamic Cordis sandbox;
-- loading the plugin causes no behavior change for a normal completed continuable child.
+Run all of these before publication:
 
-Use a cheap probe or observable diagnostic only if needed. Do not add a permanent product UI/tool solely for this verification.
+1. `npm test` / full 38-scenario suite remains green.
+2. `npm pack --dry-run` and inspect the exact files that would ship. The tarball must contain only the intended runtime/package files plus README/license metadata; no tests, probes, local-run artifacts, session logs, or private experiment files.
+3. Build a real local tarball with `npm pack`, install that tarball through the ordinary `dsh plugin --profile <scratch> add <tarball>` path in an isolated scratch profile, and verify the plugin mounts successfully. A cheap normal-child smoke test is enough; do not repeat the max-token burn unless packaging changes runtime behavior.
+4. Verify a fresh clone/install does not depend on undeclared local files or workspace state.
+5. Re-run `git status` and ensure no generated/runtime artifacts are accidentally tracked.
 
-If the packaged mount still lacks a genuine `AbortController`, STOP and document the discrepancy. Do not add a fake signal or private workaround.
+If any release-candidate check exposes a runtime defect, stop and document it before changing product logic. Packaging/documentation defects may be fixed normally, followed by the checks again.
 
-## Step 3 — one final real max-tokens end-to-end acceptance — DONE, ALL SEVEN CRITERIA PASS (trace in §12.4)
+## Step 3 — discovery copy, but no external mutation yet
 
-Only after Steps 1–2 pass, run exactly one final native continuable-child recovery test through the packaged mount.
+Prepare the exact metadata/copy for later publication:
 
-Before burning a default 32,768-token output, inspect whether the official native continuable start path lets the test child use a deliberately small `maxTokens` through a supported public option while preserving the same `stopReason: 'max-tokens'` lifecycle. If yes, use that cheaper deterministic ceiling. If not, run one default real ceiling test. Do not alter product code to make the test easier.
+- GitHub description: concise, concrete, searchable; include `DSH`, `subagent`, `max-tokens`, and `auto-continue once` semantics.
+- GitHub topics: at minimum `dsh-plugin`; add only directly relevant topics.
+- npm package description/keywords consistent with the README.
+- one-line awesome-list description focused on the user-visible benefit, not implementation internals.
+- verified install command for the eventual npm package.
 
-Acceptance criteria:
+Do not actually change repository description/topics, publish npm, create a release/tag, or submit a PR to an awesome list in this step unless the user explicitly approves external publication.
 
-1. A real native continuable child ends its first activation with explicit `max-tokens`.
-2. Watchdog starts exactly one official `ctx.sessions.flush(childSession)` checkpoint while the Session is live.
-3. After settlement + checkpoint resolution, one official `subagents.followup()` is accepted with a genuine `AbortSignal`.
-4. The **same durable child session id** resumes in a new activation epoch (new runId).
-5. Exactly one automatic continuation is ever delivered for the chain.
-6. If the resumed activation completes normally, Watchdog emits no recovery-failed notice. If it fails again, it emits at most one notice and performs no second continuation.
-7. No timer, polling, custom persistence, private runtime API, or model-based recovery judgment is introduced.
+## Stop condition
 
-Record the exact live evidence in `docs/DSH-SEAMS.md`, update `AGENTS.md` status, run the full local suite once more, commit and push.
-
-If the final live acceptance passes, STOP feature development. The next phase is distribution only: README + package metadata polish + local install recheck + npm publication + GitHub description/topics (`dsh-plugin`) + ecosystem submission/discovery work.
-
-If it fails, stop and document the discrepancy rather than patching around it.
+When README + metadata are ready and every release-candidate check passes, update `AGENTS.md` and this file to `release candidate ready`, commit and push. Report the exact tarball contents, install command, package size, test result, and the proposed GitHub/npm/awesome-list copy. Then stop for user approval before any public publication or ecosystem submission.
