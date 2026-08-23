@@ -1,68 +1,59 @@
-# NEXT — close the single blocking guard, then implement v0.1
+# NEXT — fix duplicate-end guard, then run one live recovery
 
-Status (current): **blocking guard verified and v0.1 implemented; all acceptance
-criteria pass locally.** The verified answer lives in
-[DSH-SEAMS.md](DSH-SEAMS.md) §6a ("v0.1 continue-once guard"); the implementation
-is [../lib/index.js](../lib/index.js) with the derived dynamic body
-[../plugin/watchdog.host.js](../plugin/watchdog.host.js); the acceptance suite is
-[../test/watchdog.test.mjs](../test/watchdog.test.mjs) (`node --test
-test/watchdog.test.mjs` — 28 scenarios over both artifacts against real cordis
-dispatch, the real subagent lifecycle emitter, and real session appends; the
-recovery seam itself is spied at the exact official call boundary).
+Status: v0.1 implementation exists at commit `4ecfea8` and the local suite passes, but review found one blocking test/guard gap that must be closed before the live approval test.
 
-Read [../AGENTS.md](../AGENTS.md) and [DSH-SEAMS.md](DSH-SEAMS.md) first.
+Read [../AGENTS.md](../AGENTS.md) and [DSH-SEAMS.md](DSH-SEAMS.md) first. Do not broaden product scope.
 
-## Current product decision
+## Blocking review finding
 
-v0.1 has one user-visible job:
+The current `engaged` set conflates two states:
 
-> When a native **continuable** DSH subagent ends with explicit `max-tokens`, automatically continue that same child conversation once. If recovery does not succeed, stop and tell the parent.
+1. the first `max-tokens` end event has been accepted and the async durable check / `followup()` decision is still in flight;
+2. the one watchdog continuation has actually been delivered/spent and a later activation has failed again.
 
-Use only verified official DSH seams. Do not broaden scope.
+In `lib/index.js`, once `engaged.has(childId)` is true, another `subagent/end` with `max-tokens` or `error` immediately calls `notifyOnce(...)`. Therefore a true duplicate delivery of the *original* end event, arriving while the first recovery decision is still pending, can produce a false "recovery failed" parent notice before any recovery activation has happened.
 
-## Blocking question — verify this first
+The current AC9 test does not actually exercise duplicate `subagent/end` delivery: it calls `resolve()` twice on the same Promise (`child.settle('max-tokens')` twice). A Promise resolves only once, so the lifecycle emitter only produces one real end event. The test proves duplicate Promise settlement is harmless, not duplicate event delivery.
 
-A continuable child gets a new activation epoch and new `runId` after `subagents.followup()` cold-resumes/wakes it. Before writing plugin code, determine the smallest reliable identity/guard that answers:
+## Required fix
 
-> Has this child task/recovery chain already received its one watchdog continuation?
+Keep the minimal product behavior unchanged:
 
-The guard must prevent a second automatic continuation when any of these occur:
+> A native continuable child ending in explicit `max-tokens` is automatically continued once. Only if the recovery activation later ends in `max-tokens` or explicit error does the watchdog notify the parent and stop.
 
-- the resumed activation also ends in `max-tokens`;
-- duplicate/repeated `subagent/end` delivery;
-- settlement/report duplication;
-- cold resume creates a new activation `runId`;
-- process/plugin restart or re-mount, if the runtime exposes a durable official way to recover the guard state.
+Implement the smallest state model that distinguishes at least:
 
-Inspect only the minimum live runtime surfaces needed to answer this. Prefer existing durable child/session metadata or session events over inventing storage. If restart-safe idempotence cannot be achieved with an official seam in v0.1, document the exact limitation and choose the safest fail-closed behavior rather than adding custom persistence.
+- first failure / recovery decision in flight;
+- continuation successfully delivered (recovery spent);
+- recovery activation failed again / notify once.
 
-Record the verified answer in `DSH-SEAMS.md` under a short new section named `v0.1 continue-once guard`.
+Do not add timers, persistence of our own, UI, heuristics, or another LLM. Preserve the durable `subagent-watchdog` marker for restart safety.
 
-## Then implement the smallest v0.1
+## Test requirement
 
-Only after the guard is verified:
+Replace or supplement AC9 with a test that causes the watchdog listener to receive two genuine `subagent/end` events for the same child/original epoch while the first async recovery decision is still pending.
 
-1. Listen for native continuable child termination.
-2. Ignore everything except explicit `stopReason: 'max-tokens'`.
-3. If the guard says this child task has not been auto-continued, call the verified official `subagents.followup()` seam with one short continuation instruction that asks the child to continue the unfinished task from its existing conversation state.
-4. Mark/record the one recovery before or atomically with the action so duplicate events cannot trigger another continuation.
-5. If the recovery activation ends again in `max-tokens` or in an explicit provider/runtime error, do not intervene again; notify the parent once.
-6. Normal completion, clean abort, refusal, one-shot children, and unknown stop reasons remain untouched.
+Assert all three:
 
-## Acceptance criteria
+1. exactly one child `followup()` is attempted;
+2. no parent failure notice is emitted merely because of the duplicate original end event;
+3. a genuinely later recovery activation that ends in `max-tokens` or `error` still emits exactly one parent notice and never triggers a second continuation.
 
-- One continuable child ending in `max-tokens` is automatically continued exactly once. ✅ (AC1)
-- The same child cannot be auto-continued twice because of a second `max-tokens` epoch or duplicate end event. ✅ (AC2, AC9)
-- A successful resumed child completes normally with no extra watchdog action. ✅ (AC3)
-- A resumed child that fails again causes one parent notice and no further recovery. ✅ (AC2, AC4)
-- Provider/runtime errors are never auto-retried in v0.1. ✅ (AC5, AC4)
-- One-shot subagents are never recovered in v0.1. ✅ (AC6)
-- No UI, dashboard, DAG, team manager, heuristic timeout/stuck detector, custom orchestration layer, or extra LLM is added. ✅ (static assertions + listener-only surface)
+Run the complete suite against both artifacts again.
 
-Additional covered behavior: restart-safe guard via the durable continuation
-marker (AC8), failed delivery keeps the chain engaged and notifies honestly
-(AC10), absent parent contained skip, steer-vs-followup parent scheduling.
+## Then: one live end-to-end recovery
 
-## Distribution is not part of this step
+Only after the duplicate-end test passes:
 
-Do not spend time on README polish, npm publication, awesome-list submission, screenshots, branding, or discovery metadata until the v0.1 behavior passes the acceptance criteria locally.
+1. define/run the dynamic package once on an interactive `cordis`-preset host;
+2. create a real native continuable child that reliably terminates with `max-tokens`;
+3. observe the watchdog deliver exactly one official `subagents.followup()` continuation;
+4. verify the child resumes in the same durable conversation;
+5. verify no loop/duplicate notice occurs;
+6. record the observed evidence in `DSH-SEAMS.md` and commit/push.
+
+If the live result differs from the local harness, stop and document the discrepancy rather than patching around it.
+
+## Distribution after the live test
+
+Do not publish yet. The repository still lacks the installable bundle metadata (`package.json` with `dsh.bundle`, `cordis.patch.yml`) and README/discovery metadata. After the live recovery passes, the next phase is packaging + npm/GitHub install verification + `dsh-plugin` topic + awesome-list submission.
