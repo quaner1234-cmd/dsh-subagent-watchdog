@@ -253,11 +253,21 @@ function startDurabilityCheckpoint(ctx, session, warn) {
 	}
 }
 
+/**
+ * Hard dependency: the host-plane subagent registry is the only service the
+ * plugin cannot observe around. Declaring it makes Cordis defer (and re-run)
+ * `apply` until `subagents` is registered — composition rows activate in
+ * service-availability order, and an optional `ctx.get('subagents')` read at
+ * apply time races that order: on a real headless mount the row regularly
+ * activated BEFORE `dsh-subagent`, leaving the plugin a silent no-op for its
+ * whole lifetime (observed live during the packaged-mount acceptance run;
+ * every other service stays an optional in-handler read by design).
+ */
+const inject = ['subagents']
+
 /** The Cordis plugin. Registers listeners inside `apply` so Cordis owns disposal. */
 function apply(ctx) {
-	const subagents = ctx.get('subagents')
-	// Nothing to observe on compositions without the host-plane registry.
-	if (subagents === undefined) return
+	const subagents = ctx.subagents
 
 	const warn = (...parts) => {
 		try {
@@ -543,4 +553,4 @@ function apply(ctx) {
 }
 
 
-return { name, apply }
+return { name, inject, apply }

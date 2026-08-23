@@ -893,3 +893,125 @@ Real-signal plumbing asserted at both official boundaries: followup options
 (`instanceof AbortSignal`, non-aborted, AC1) and persistence inspection (AC8).
 Pre-existing guard suite (AC1–AC10, AC9b, absent-parent, steer-vs-followup)
 passes unchanged.
+
+---
+
+## 12. Local packaging + final live acceptance — ALL SEVEN CRITERIA PASS
+
+Executed 2026-08-23 against `@deepseek-ai/dsh` **0.1.1-rc.2** (same process
+family as §0–§11), on a production-shaped **packaged composition mount**, not a
+dynamic dev package.
+
+### 12.1 Verified official packaging format (source-verified before writing metadata)
+
+- A profile is `$DSH_HOME/profiles/<name>/` holding `package.json` (manifest
+  with the ordered `dsh.profile.bundles` list), a user patch layer
+  `cordis.patch.yml`, and `pnpm-workspace.yaml`
+  (`dsh-app-boot/lib/index.js`, "Profile discovery…").
+- The ordinary install path is `dsh plugin --profile <name> add <package|path>`:
+  it initializes the profile on first use, forwards to pnpm with relative path
+  specs anchored to the invoking directory, then **reconciles** — any installed
+  dependency whose manifest declares `"dsh": { "bundle": { "patch": … } }`
+  joins the bundle stack automatically; bundle-less dependencies are installed
+  as plain dependencies with a warning (`dsh/lib/plugin-9h8shc4d.js`).
+- The loader uses `exports.default ?? exports` of each row module, so the
+  existing `lib/index.js` default export `{ name, apply }` mounted unchanged.
+- Shipped third-party precedent confirmed the minimal shape
+  (`dsh-better-sidebar@0.13.0`): package.json with `dsh.bundle.patch` plus one
+  root `cordis.patch.yml` containing a single `- insert:` row.
+- This repo now ships exactly that: [package.json](../package.json) +
+  [cordis.patch.yml](../cordis.patch.yml) (row id `subagent-watchdog`). No
+  build step, no dependencies (`lib/index.js` imports nothing).
+
+### 12.2 Live defect found by the packaged mount — apply-time optional read of `subagents`
+
+The first instrumented acceptance attempt recorded the terminal
+`turn/end {kind:'max-tokens'}` and `subagent/end` but NO watchdog reaction at
+all: no warn line, no notice, no followup — the decision path never entered.
+Cause chain:
+
+1. Composition rows activate in service-availability order ("Row order carries
+   no load semantics"); the freshly added bundle row activated before the
+   `subagents` service was registered.
+2. `apply()` used an optional `ctx.get('subagents')` and returned permanently
+   on `undefined` — a silent no-op for the plugin's whole lifetime.
+3. The local harness could never catch this: `makeHost` pre-mounts
+   `SubagentRuntime` before mounting the artifact, so all 38 scenarios passed
+   on both sides of the defect.
+
+Fix (product change): declare the one true hard dependency —
+`export const inject = ['subagents']` — so Cordis defers/re-runs `apply` until
+the registry exists ([lib/index.js](../lib/index.js)); every other service
+stays an optional in-handler read. Suite re-run green (38/38). The dynamic
+body regenerator ([scripts/sync-dynamic.mjs](../scripts/sync-dynamic.mjs)) now
+carries the `inject` export into `plugin/watchdog.host.js`.
+
+### 12.3 Acceptance environment (scratch profile, ordinary path only)
+
+- Isolated `DSH_HOME` under the workspace (official override,
+  `dsh-home-paths`): profile `headless` auto-initialized from the shipped
+  template `[dsh-base, dsh-headless]`, then two `dsh plugin add` invocations
+  appended `dsh-subagent-watchdog` and two throwaway probe bundles (an
+  AbortController-environment prober and a scalar evidence recorder — test
+  harness only, never shipped).
+- Model route pinned via launcher `--patch` overlays (test-only): the pi-ai
+  route must be declared in the ROW CONFIG because headless fires its first
+  model request before the settings document finishes loading (registration is
+  synchronous from row config; the settings section lands later via
+  `installSettingsSection`). The chosen route honors `max_tokens` verbatim
+  (`finish_reason: length` at the exact cap); the opencode-go route ignores it
+  (7503 completion tokens on a 32 cap — measured directly).
+- Cheap deterministic ceiling per NEXT step 3: YES through a supported public
+  option — `tool-subagent` config `agentOptions.maxTokens` flows
+  `resolveChildAgentOptions` → child loop request → finish `length` →
+  sticky `max-tokens`. Overlay set 300; no product code touched for the test.
+- Headless driving notes (test harness, not product): the runner's `whenIdle`
+  resolves if the parent goes idle before a background settlement arrives, so
+  the parent held itself alive by polling `list_agents`; bash-based sleeps are
+  unavailable under headless sandbox policy (no approval answerer).
+
+### 12.4 Acceptance trace (evidence recorder, scalar facts; times in ms from boot)
+
+Child id `3b24d537-3f60-42c1-beb9-fd27c302dbca`, parent = the headless root
+session; route openrouter-newest/stealth/ox-alpha; ceiling 300 tokens.
+
+```
+  702  boot { abortController: "function" }                    ← genuine host primitives (Step-2 gate)
+59010  subagent/start  runId 28c158b4… id 3b24d537…            ← epoch 1 (continuable)
+81236  turn/end        id 3b24d537… reasonKind max-tokens      ← AC1
+81265  subagent/end    runId 28c158b4… stopReason max-tokens
+81333  subagent/start  runId 69d72121… id 3b24d537…            ← AC3+AC4: same durable session id,
+                                                                new activation epoch, 68 ms after
+                                                                settlement ⇒ checkpoint-before-followup
+                                                                closed the §8 gap and the real signal
+                                                                passed AbortSignal.any fusion
+81433  user/message    id 3b24d537… source subagent-watchdog/relay  ← the ONE continuation (AC5)
+84267  inspect @3s     descriptor continuable, markers 1, turnEnds [max-tokens]
+87825  parent notice   "ran out of room…" (runtime's own wording, §2.4)
+126269 inspect @45s    markers STILL 1                         ← no duplicate delivery (AC5)
+408782 report          child reports task complete (epoch 2)
+419849 turn/end        id 3b24d537… reasonKind completed       ← resumed activation healthy
+419874 subagent/end    runId 69d72121… stopReason completed
+419937 parent notice   "finished and will do no further work…"
+—      NO message containing "[watchdog]" anywhere              ← AC6 normal-completion branch:
+                                                                silent on success (AC7 by code+suite)
+```
+
+Parent's own summary agreed: three messages received (two settlements + the
+child's `report` relay), "no message containing [watchdog] appeared."
+
+### 12.5 Constraints learned (runtime facts, no action required by v0.1)
+
+- `coldResume` reconstructs children with ONLY `{provider, model}` from the
+  descriptor (`dsh-subagent/lib/index.js` ~L1160) — a caller-set
+  `maxTokens` does NOT survive cold resume, so a recovered epoch runs uncapped
+  by runtime design. v0.1 neither relies on nor alters this.
+- The fresh-child `subagent/descriptor` seed does not dispatch through
+  `session/event` (bulk seed write); mode classification therefore comes from
+  the post-flush durable inspection — exactly what §6a/§11 designed for.
+- `opencode-go` (openai-completions at `opencode.ai/zen/go/v1`) disregards
+  client `max_tokens`; OpenRouter honored it exactly. Route choice matters for
+  token-ceiling tests only; the watchdog is agnostic.
+
+**v0.1 feature development is complete.** Next phase per docs/NEXT.md:
+distribution only.

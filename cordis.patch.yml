@@ -1,0 +1,20 @@
+# dsh-subagent-watchdog bundle patch
+#
+# This file is the `dsh.bundle.patch` layer of the package: when the plugin is
+# installed through the official CLI —
+#
+#   dsh plugin --profile <name> add dsh-subagent-watchdog
+#
+# — the command reconciles `dsh.profile.bundles` against installed packages
+# and, seeing the `dsh.bundle` declaration in package.json, appends
+# `dsh-subagent-watchdog` to the bundle stack. The profile boot then applies
+# THIS patch (a single `insert` of the plugin row) after every bundle layer.
+#
+# The row mounts the host-plane module (`lib/index.js`, default export
+# `{ name, apply }`) in the full host process, where the recovery path's
+# `new AbortController()` is the standard host primitive (the dynamic-package
+# sandbox masks that global by design; composition rows are not sandboxed).
+
+- insert:
+    - id: subagent-watchdog
+      name: 'dsh-subagent-watchdog'

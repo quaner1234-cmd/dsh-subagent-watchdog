@@ -30,8 +30,9 @@ const header = `/**
 
 let body = source
 	.replace(/^export const name = /m, 'const name = ')
+	.replace(/^export const inject = /m, 'const inject = ')
 	.replace(/^export function apply\(/m, 'function apply(')
-	.replace(/^export default \{ name, apply \}\n?/m, '')
+	.replace(/^export default \{ name, inject, apply \}\n?/m, '')
 
 if (/^export /m.test(body)) {
 	throw new Error('unhandled export statement found; extend scripts/sync-dynamic.mjs')
@@ -39,6 +40,6 @@ if (/^export /m.test(body)) {
 
 writeFileSync(
 	join(root, 'plugin', 'watchdog.host.js'),
-	`${header}${body}\nreturn { name, apply }\n`,
+	`${header}${body}\nreturn { name, inject, apply }\n`,
 )
 console.log('plugin/watchdog.host.js regenerated from lib/index.js')

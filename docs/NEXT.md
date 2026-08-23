@@ -1,12 +1,24 @@
-# NEXT — package locally, verify the production-shaped mount, then run one final live acceptance
+# NEXT — distribution only
 
-Status: the redesigned v0.1 is green locally at commit `7cbf84e`: checkpoint-before-followup is implemented, the duck-typed signal stub is gone, and the suite passes 38 scenarios over both artifacts. `docs/DSH-SEAMS.md` §10–§11 records the live seam evidence and implementation rationale.
+Status: Steps 1–3 of the previous plan are **complete** at the packaging +
+live-acceptance milestone. The smallest local-installable package exists
+([package.json](../package.json) with `dsh.bundle.patch` +
+[cordis.patch.yml](../cordis.patch.yml); entry remains `lib/index.js`, no build
+step), it installs through the ordinary `dsh plugin --profile <name> add` path,
+and the one final real max-tokens end-to-end acceptance run **passed all seven
+criteria on a production-shaped headless mount** — including a same-session-id
+cold resume 68 ms after settlement under a fresh runId, exactly one durable
+watchdog continuation marker across both inspections, and a healthy recovered
+activation with zero further interventions. Full evidence and the live-found
+`inject: ['subagents']` fix are recorded in docs/DSH-SEAMS.md §12.
 
-One release-shape gap remains before the final live recovery test: the repository still has **no `package.json` or Cordis/DSH bundle metadata**, so it cannot yet be mounted in the ordinary packaged host shape where the implementation expects the standard host `AbortController` global. Do not spend another full max-token run in the dynamic dev sandbox; §11 already establishes that the sandbox masks this global.
+Feature development is STOPPED. The next phase is distribution only:
+README + package metadata polish + local install recheck + npm publication +
+GitHub description/topics (`dsh-plugin`) + ecosystem submission/discovery work.
+Do not publish to npm or submit to an awesome list as part of a feature step.
+Do not add product features.
 
-Do not publish to npm or submit to an awesome list in this step. Do not add product features.
-
-## Step 1 — create the smallest local-installable package
+## Step 1 — create the smallest local-installable package — DONE (see §12.1 of DSH-SEAMS.md)
 
 Before writing metadata, inspect the installed DSH plugin-development guidance/runtime and verify the current official bundle/composition format. Do not infer stale package fields or install commands.
 
@@ -20,7 +32,7 @@ Requirements:
 4. Run the existing 38-scenario suite after packaging; packaging must not change behavior.
 5. Install/mount the plugin locally through the same ordinary plugin path a real user would use (local path/package is fine; do not publish).
 
-## Step 2 — cheap host-shape verification
+## Step 2 — cheap host-shape verification — DONE (probe recorded genuine `AbortController`/`AbortSignal` + `AbortSignal.any` fusion; normal continuable child completed untouched)
 
 Before the final max-token recovery run, prove on the packaged composition mount that:
 
@@ -32,7 +44,7 @@ Use a cheap probe or observable diagnostic only if needed. Do not add a permanen
 
 If the packaged mount still lacks a genuine `AbortController`, STOP and document the discrepancy. Do not add a fake signal or private workaround.
 
-## Step 3 — one final real max-tokens end-to-end acceptance
+## Step 3 — one final real max-tokens end-to-end acceptance — DONE, ALL SEVEN CRITERIA PASS (trace in §12.4)
 
 Only after Steps 1–2 pass, run exactly one final native continuable-child recovery test through the packaged mount.
 
