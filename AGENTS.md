@@ -4,7 +4,9 @@ A public DSH plugin that safely recovers native continuable subagents from one h
 
 ## v0.1 product behavior
 
-When a native **continuable** subagent ends with `stopReason: 'max-tokens'`, automatically continue that same child conversation **once** using the verified official DSH `subagents.followup()` seam.
+When a native **continuable** subagent ends with `stopReason: 'max-tokens'`, automatically continue that same child conversation **once** using official DSH seams.
+
+The verified live sequence is: observe the child's terminal `turn/end`, start one official `ctx.sessions.flush(childSession)` durability checkpoint while the Session is still live, allow normal settlement, then call official `subagents.followup()` only after that checkpoint has resolved.
 
 If that automatic continuation also ends in `max-tokens`, or ends in an explicit runtime/provider error, stop intervening and notify the parent. Never loop.
 
@@ -16,6 +18,7 @@ If that automatic continuation also ends in `max-tokens`, or ends in an explicit
 - Provider/model/runtime errors may be reported but are not auto-retried.
 - One-shot subagents are not recovered in v0.1 because DSH exposes no official resume seam for them.
 - Normal completion, clean abort, refusal, and unknown future stop reasons are untouched.
+- No timers, polling, custom persistence, or private runtime APIs.
 
 ## Hard non-goals
 
@@ -32,21 +35,12 @@ No dashboard, no team manager, no DAG, no heuristic stuck detector, no custom or
 
 ## Status
 
-v0.1 implemented; the blocking guard question is answered in
-[docs/DSH-SEAMS.md](docs/DSH-SEAMS.md) §6a, the duplicate-end review finding is
-fixed (per-chain `pending`/`delivered` guard state + AC9b), and all acceptance
-criteria pass locally (`node --test test/watchdog.test.mjs`; 30 scenarios over
-both artifacts against real cordis/dsh-subagent/dsh-session dispatch, recovery
-seam spied at the official call boundary). Sources: [lib/index.js](lib/index.js),
-[plugin/watchdog.host.js](plugin/watchdog.host.js), [test/watchdog.test.mjs](test/watchdog.test.mjs).
-The live end-to-end step was executed on a real `cordis`-preset host and
-**diverged**: guard behavior matched the harness exactly, but the official
-`followup()` seam rejected the continuation (`NOT_RESUMABLE`) because the
-freshly settled child's durable log had not yet been flushed — see
-[docs/DSH-SEAMS.md](docs/DSH-SEAMS.md) §8. The alternative synchronous live
-seam (enqueue via `Agent.followup()` during `turn/end` dispatch, before the
-loop's post-turn inbox check) was then investigated and **ruled out**: the
-inbox splice is itself a session append, so the runtime's reentrancy guard
-throws before anything is enqueued — see [docs/DSH-SEAMS.md](docs/DSH-SEAMS.md)
-§9. v0.1 is live-blocked pending a product decision; nothing was patched
-around either discrepancy.
+The original local implementation and duplicate-end guard are covered by the existing 30-scenario suite, but the product code has **not yet been redesigned** around the live-verified checkpoint-before-followup sequence and must not be published as-is.
+
+Live findings:
+
+- §8: immediate `subagents.followup()` after settlement failed because the freshly settled child's physical log lagged and cold resume could not fold its continuable descriptor.
+- §9: trying to enqueue a live `Agent.followup()` from the terminal `session/event` callback is impossible because inbox mutation performs a nested session append and hits the session reentrancy guard.
+- §10: one official `ctx.sessions.flush(childSession)` started from the terminal session event closes the durability gap. After settlement + checkpoint resolution, official `subagents.followup()` successfully cold-resumed the **same durable child session id** in a new activation epoch. No timers, polling, custom storage, or private APIs were required.
+
+One implementation blocker remains before redesigning the product code: `subagents.followup(..., { signal })` must receive a **real `AbortSignal`**. The current sandbox fallback in `neverAbortSignal()` is only a duck-typed stub and is rejected by `AbortSignal.any()` once cold resume reaches `agents.resume()`. The next step is defined in [docs/NEXT.md](docs/NEXT.md).
