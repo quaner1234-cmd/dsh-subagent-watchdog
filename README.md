@@ -51,9 +51,10 @@ Live-tested end-to-end against **`@deepseek-ai/dsh` 0.1.1-rc.2** only. No broade
 ## Verification and evidence
 
 - Local suite: 38 scenarios over both shipped artifacts (`lib/index.js` and the derived dynamic-package body) against real cordis/`dsh-subagent`/`dsh-session` dispatch — `node --test test/watchdog.test.mjs`.
-- Packaged-mount live acceptance: a real native continuable child ended its first activation with explicit `max-tokens`; the watchdog started one durability checkpoint and exactly one official followup cold-resumed the **same durable child session id** under a fresh runId 68 ms after settlement; the recovered activation ran to normal completion with zero further interventions.
+- Final packaged re-validation directly observed a real native continuable child end with explicit `max-tokens`, the **same durable child session id** start a new activation under a fresh runId 68 ms after settlement, exactly one durable `subagent-watchdog/relay` marker remain present across later inspection, and the recovered activation complete normally with no watchdog failure notice.
+- The checkpoint-before-followup ordering and genuine `AbortSignal` plumbing are supported by prior instrumented live probes plus the deterministic suite; they were not independently emitted as explicit records in the final packaged trace.
 
-The full verified seam survey and evidence log lives in [docs/DSH-SEAMS.md](docs/DSH-SEAMS.md).
+The full verified seam survey and evidence log lives in [docs/DSH-SEAMS.md](docs/DSH-SEAMS.md). The final acceptance phase crossed its original one-run/STOP boundary during debugging; that protocol deviation and the resulting evidence calibration are recorded in [docs/PROTOCOL-DEVIATION-2026-08-23.md](docs/PROTOCOL-DEVIATION-2026-08-23.md).
 
 ## License
 
