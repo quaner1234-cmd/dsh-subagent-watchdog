@@ -4,8 +4,12 @@ Status: the duplicate-end review finding below is FIXED — the guard now keeps 
 per-chain `pending`/`delivered` state (`lib/index.js`), and AC9b delivers two
 genuine `subagent/end` events for the same child while the first recovery
 decision is parked in-flight, asserting all three required outcomes. Suite: 30
-scenarios over both artifacts, all passing. Remaining before distribution: the
-live end-to-end recovery in "Then" below.
+scenarios over both artifacts, all passing. The live end-to-end recovery in
+"Then" below was executed on a real `cordis`-preset host and **diverged**: the
+official `followup()` seam rejected the continuation because the settled child's
+durable log had not been flushed yet (`NOT_RESUMABLE`). Evidence and analysis:
+[DSH-SEAMS.md](DSH-SEAMS.md) §8. Next decision needed there (open questions A/B)
+before any code changes; distribution work below stays blocked behind it.
 
 Read [../AGENTS.md](../AGENTS.md) and [DSH-SEAMS.md](DSH-SEAMS.md) first. Do not broaden product scope.
 

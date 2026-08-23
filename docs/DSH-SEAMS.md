@@ -5,6 +5,10 @@ verified against the installed runtime. v0.1 implemented
 ([../lib/index.js](../lib/index.js) + dynamic body
 [../plugin/watchdog.host.js](../plugin/watchdog.host.js)) and acceptance-tested on
 real cordis/dsh-subagent/dsh-session dispatch ([../test/watchdog.test.mjs](../test/watchdog.test.mjs)).
+**§8 records the one live end-to-end recovery attempt: the guard logic matched the
+harness exactly, but the official `followup()` seam rejected the continuation for a
+reason the local harness cannot reproduce (lazy durable-log flush). v0.1 is live-blocked;
+nothing was patched.**
 
 Runtime under inspection: `@deepseek-ai/dsh` **0.1.1-rc.2** (the process serving this
 session), running the **`standard`** agent preset (confirmed from this session's own
@@ -474,3 +478,119 @@ process-lifetime sets in the plugin plus (b) the child's own durable session log
   cold-resume accepted and answered; child session header showing `parentSession`,
   `origin:'subagent'`, `delegationDepth:1`; projection-cache row
   `{"mode":"continuable","label":"Echo one word for seam test","seq":0}`.
+
+## 8. Live end-to-end recovery attempt — DISCREPANCY (v0.1 live-blocked, not patched)
+
+Executed 2026-08-23 on the `cordis`-preset host serving this session
+(`@deepseek-ai/dsh` **0.1.1-rc.2**, same version as §0). The dynamic package was
+defined byte-faithfully from [../plugin/watchdog.host.js](../plugin/watchdog.host.js)
+(`watch-1/pkg-1`, run `run-1`, host half running, no client half) after
+`cordis_inspect_list/query` re-confirmed every seam of §2 against the live host:
+`subagents.followup(parent, childId, content, options) → Promise<MessageId>`,
+`sessionPersistence.inspect(id, signal?) → Promise<SessionInspection>`,
+`agents.get(id)`, emit-mode `subagent/start|end` with `SubagentRunInfo/EndInfo`,
+emit-mode `session/event(session, event)`, and the dynamic-host builtin set
+(`ctx/harness/console/btoa/atob/TextEncoder/TextDecoder`, **no `AbortController`**
+— exactly what the artifact's `neverAbortSignal()` fallback anticipates).
+
+### 8.1 Probe
+
+One genuine native continuable child spawned via the official `subagent` tool:
+
+- child id `3fc27f70-3912-4ad9-a95c-a18f5dd53638`, parent = this session
+  (`session-6a77ae90-20a8-4567-9afb-0ae823468d05`);
+- task: enumerate positive integers spelled out in English words until physically
+  unable to continue — designed to hit the output-token ceiling;
+- it decoded exactly **32,768 output tokens in one turn** (`sessionStats` row in
+  `~/.dsh/storages/session_projcache.json`) and settled with the runtime's own
+  verbatim §2.4 notice: *"ran out of room before it finished."*
+
+### 8.2 What matched the tested harness exactly
+
+1. Detection: the plugin's `subagent/end` listener fired on the real max-tokens
+   settlement; the live descriptor fold had classified the child continuable.
+2. Guard sequencing: chain entered `'pending'` synchronously; durable verification
+   ran off-thread; the one-shot budget was spent mark-before-act on the failed
+   attempt (AC10 path); no retry, no loop, no second notice.
+3. Parent notification: exactly ONE `[watchdog]` parent notice, delivered through
+   the official `parent.followup(message)` channel while this agent was idle,
+   with the exact `buildRecoveryFailedNotice({outcome:'delivery-failed'})` wording:
+   > `[watchdog] Subagent 3fc27f70-3912-4ad9-a95c-a18f5dd53638 ended with max-tokens; its one automatic continuation could not be delivered (max-tokens). No further automatic recovery will be attempted. …`
+4. Containment: every warn() stayed inside its try/catch; no listener exception escaped.
+5. Runtime settlement wording matched §2.4 verbatim.
+
+So: **the entire v0.1 state machine behaved as acceptance-tested.** What failed is
+one step further down: the official seam rejected the continuation itself.
+
+### 8.3 The divergence
+
+`subagents.followup(parent, childId, content, options)` **threw** for the freshly
+settled child. The child never received any message (`list_agents` stayed
+`[ready]`; no second activation epoch; no second settlement notice), so the v0.1
+product outcome "child automatically continued once" did NOT occur.
+
+Root cause, pinned by direct artifact evidence plus installed source reading
+(method of §0):
+
+1. At settlement the manager deletes the Activation and releases ownership before
+   emitting `subagent/end` (§6 item 7) — so a watchdog-initiated continuation must
+   go through `coldResume`.
+2. `SubagentContinuationManager.followup` → activation absent → `coldResume`
+   (`dsh-subagent/lib/index.js` ~L862): `persistence.inspect(childId)` →
+   `authorizeLineage` → `foldSubagentDescriptor(loaded.events.slice(seedLength))`;
+   if no descriptor folds, it throws `SubagentError(…, 'NOT_RESUMABLE')`:
+   *"subagent … has no supported continuation state and cannot be resumed."*
+3. `PersistenceCoordinator.inspect` is live-preferred
+   (`dsh-session-persistence/lib/index.js` ~L897: `const live = this.ctx.sessions.get(id);
+   if (live !== void 0) return this.inspectLive(live)`), but the settled child's
+   Session is no longer live-published — so inspect reads the PHYSICAL log.
+4. The physical log provably lags: decompressing
+   `~/.dsh/sessions/--Users-jinronghuan-Desktop-vibe~0020coding-dsh-subagent-watchdog--/3fc27f70-…/session.jsonl.zstd`
+   yields **only the validated header line**, immediately after settlement AND
+   again minutes later (mtime 2026-08-23T05:33:36Z, still 1 line). This
+   deployment flushes events lazily per checkpoint policy (§0/§4 already noted
+   lazy flushing; here it is unbounded on the observed timescale).
+5. Therefore `loaded.events` contained no `subagent/descriptor` at followup time,
+   `foldSubagentDescriptor` returned `undefined`, and cold-resume rejected the
+   delivery — while the SAME descriptor fact WAS visible through the live
+   `session/event` stream and in the projection cache
+   (`{"identity":{"mode":"continuable","label":"Mechanical enumeration stress child","seq":0}}`,
+   `descriptorSeen: true`). The plugin correctly proceeded because its guard
+   accepts live OR durable mode evidence (`durable.mode !== 'continuable' && mode !== 'continuable'`),
+   but the seam itself only accepts DURABLE evidence.
+
+The local harness cannot catch this: its persistence stand-in serves all events
+synchronously, so `followup` always sees the descriptor. §6 item 4's ordering
+analysis ("cold-resume ordering is safe") verified event ORDERING but assumed the
+durable log was query-complete at decision time; the deployment's flush policy
+breaks that assumption for the watchdog's specific timing (seconds after settlement).
+The earlier successful probe (`send_message` to a ready child, §0) worked because
+minutes had passed and that child's events had been flushed.
+
+### 8.4 Observability gap found alongside
+
+The exact thrown error text is unreachable from every channel available to the
+plugin and this session: the sandboxed `warn()` logs via `console.warn`, but
+`Builtin.listBuiltins` documents only `console.log`/`console.error` for the
+dynamic host realm, and no file under `~/.dsh` carries the plugin tag. Either
+`console.warn` is outside the sandbox whitelist (its throw would be swallowed by
+the containment catch) or its output has no reachable sink. Diagnostics of any
+future seam rejection will need an explicit sink decision (e.g. route through
+`console.error`) — recorded here as a finding, not changed.
+
+### 8.5 Consequences and open questions
+
+- v0.1's core promise ("automatically continue once") is **not achievable as
+  coded** on this deployment for freshly settled children: the recovery window
+  closes before the child's durable log can satisfy `coldResume`'s classification
+  requirement. The guard/notice machinery around it works end-to-end.
+- Open question A: even MANUAL recovery hits the same wall while the log is
+  unflushed — `send_message` to this very child should fail with `NOT_RESUMABLE`
+  until a checkpoint flushes events (untested at write time; child left untouched).
+- Open question B: what legitimately closes the gap without violating v0.1's
+  boundaries — waiting/re-checking durability (needs a timer, currently excluded),
+  a runtime-side flush hook, or relaxing the product contract. That is a product
+  decision for AGENTS.md/NEXT.md, deliberately not made by patching code here.
+- Plugin state at documentation time: `watch-1/pkg-1` still running (run-1);
+  probe child untouched (`[ready]`, never received anything); no repo source
+  file was modified for this test.

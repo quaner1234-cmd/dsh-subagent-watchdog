@@ -39,5 +39,9 @@ criteria pass locally (`node --test test/watchdog.test.mjs`; 30 scenarios over
 both artifacts against real cordis/dsh-subagent/dsh-session dispatch, recovery
 seam spied at the official call boundary). Sources: [lib/index.js](lib/index.js),
 [plugin/watchdog.host.js](plugin/watchdog.host.js), [test/watchdog.test.mjs](test/watchdog.test.mjs).
-Remaining live step: define/run the dynamic package once on a `cordis`-preset
-host (needs interactive approval there) to observe one real end-to-end recovery.
+The live end-to-end step was executed on a real `cordis`-preset host and
+**diverged**: guard behavior matched the harness exactly, but the official
+`followup()` seam rejected the continuation (`NOT_RESUMABLE`) because the
+freshly settled child's durable log had not yet been flushed — see
+[docs/DSH-SEAMS.md](docs/DSH-SEAMS.md) §8. v0.1 is live-blocked pending a
+product decision; nothing was patched around the discrepancy.
