@@ -43,5 +43,10 @@ The live end-to-end step was executed on a real `cordis`-preset host and
 **diverged**: guard behavior matched the harness exactly, but the official
 `followup()` seam rejected the continuation (`NOT_RESUMABLE`) because the
 freshly settled child's durable log had not yet been flushed — see
-[docs/DSH-SEAMS.md](docs/DSH-SEAMS.md) §8. v0.1 is live-blocked pending a
-product decision; nothing was patched around the discrepancy.
+[docs/DSH-SEAMS.md](docs/DSH-SEAMS.md) §8. The alternative synchronous live
+seam (enqueue via `Agent.followup()` during `turn/end` dispatch, before the
+loop's post-turn inbox check) was then investigated and **ruled out**: the
+inbox splice is itself a session append, so the runtime's reentrancy guard
+throws before anything is enqueued — see [docs/DSH-SEAMS.md](docs/DSH-SEAMS.md)
+§9. v0.1 is live-blocked pending a product decision; nothing was patched
+around either discrepancy.

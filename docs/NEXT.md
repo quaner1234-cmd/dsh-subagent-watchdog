@@ -8,8 +8,13 @@ scenarios over both artifacts, all passing. The live end-to-end recovery in
 "Then" below was executed on a real `cordis`-preset host and **diverged**: the
 official `followup()` seam rejected the continuation because the settled child's
 durable log had not been flushed yet (`NOT_RESUMABLE`). Evidence and analysis:
-[DSH-SEAMS.md](DSH-SEAMS.md) §8. Next decision needed there (open questions A/B)
-before any code changes; distribution work below stays blocked behind it.
+[DSH-SEAMS.md](DSH-SEAMS.md) §8. The alternative synchronous live seam
+(enqueue via `Agent.followup()` during `turn/end`, before the loop's inbox
+check) was investigated with an instrumented live probe and **ruled out** —
+the inbox splice is itself a session append and the runtime's reentrancy guard
+throws first: [DSH-SEAMS.md](DSH-SEAMS.md) §9. Next decision needed in §8
+(open questions A/B, now narrowed by §9) before any code changes;
+distribution work below stays blocked behind it.
 
 Read [../AGENTS.md](../AGENTS.md) and [DSH-SEAMS.md](DSH-SEAMS.md) first. Do not broaden product scope.
 

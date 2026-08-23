@@ -9,6 +9,11 @@ real cordis/dsh-subagent/dsh-session dispatch ([../test/watchdog.test.mjs](../te
 harness exactly, but the official `followup()` seam rejected the continuation for a
 reason the local harness cannot reproduce (lazy durable-log flush). v0.1 is live-blocked;
 nothing was patched.**
+**§9 records the post-§8 alternative-seam investigation: a synchronous live
+`Agent.followup()` during `turn/end` dispatch was ruled out by installed-source chain
+plus an instrumented live probe — the inbox splice is itself a session append, so the
+runtime's reentrancy guard throws before anything is enqueued. The §8 blocker stands;
+no product code was touched.**
 
 Runtime under inspection: `@deepseek-ai/dsh` **0.1.1-rc.2** (the process serving this
 session), running the **`standard`** agent preset (confirmed from this session's own
@@ -594,3 +599,115 @@ future seam rejection will need an explicit sink decision (e.g. route through
 - Plugin state at documentation time: `watch-1/pkg-1` still running (run-1);
   probe child untouched (`[ready]`, never received anything); no repo source
   file was modified for this test.
+
+---
+
+## 9. Alternative live seam investigated: synchronous `Agent.followup()` during `turn/end` — RULED OUT
+
+Question asked (post-§8, product code explicitly frozen): while a native continuable
+child Agent is still registered, can ONE ordinary follow-up enqueued through the public
+live `Agent.followup()` API synchronously during the `session/event` dispatch of
+`turn/end {kind:'max-tokens'}` — i.e., before the agent loop performs its post-turn
+`inbox.hasPending` check — keep the same Activation alive and start its next turn
+without reaching `coldResume`/persistence?
+
+### 9.1 Source chain (installed `@deepseek-ai/dsh` 0.1.1-rc.2)
+
+- Loop tail (`dsh-agent-loop/lib/index.js` ~L592→600): inside `finally`,
+  `this.session.append("turn/end", …)`; immediately after the `finally`,
+  `if (!this.inbox.hasPending) return false;` — same activation continues only if
+  the check sees pending input.
+- `Inbox.hasPending` counts BOTH queues (`dsh-agent/lib/index.js` L40–42:
+  `nextTurn.length > 0 || nextStep.length > 0`), so a `"next-turn"` splice WOULD
+  satisfy it — inbox semantics are not the obstacle.
+- `Agent.followup(input)` (`dsh-agent-loop/lib/index.js` L396) delegates to the inbox
+  splice path. `Inbox.mutate()` FIRST publishes
+  `this.session.append("agent/inbox/spliced", splice)` (`dsh-agent/lib/index.js` L148)
+  and only THEN mutates the real array (L149) — **the enqueue is itself a session append**.
+- `Session.append()` rejects reentrancy while another append is being published
+  (`dsh-session/lib/index.js` L1456):
+  `if (entry?.appending) throw new Error("session append cannot reenter while another append is being published")`.
+- Emission to root listeners is synchronous: `append()` collects listeners via
+  `ctx.events.dispatch("emit", …)` and invokes them inline before returning
+  (`dsh-session/lib/index.js` L1471–1476), with per-listener error containment into
+  an unreachable logger (§8.4).
+
+Together these predict: any `followup()` executed from inside the `turn/end` dispatch
+attempts a nested append while `entry.appending === true`, throws at L1456 BEFORE the
+array mutation (line order in `mutate()` makes the failure atomic), and leaves the
+inbox empty for the post-turn check.
+
+### 9.2 Live verification (disposable probe — honest iteration log)
+
+Disposable dynamic plugin `maxtokens-probe` (plugin id `probe-2`): a root-level
+`ctx.on('session/event')` listener with per-branch decision recording, exposed through
+dynamically registered model tools (the reachable diagnostics channel §8.4 lacked).
+Three package iterations, reported as they happened:
+
+1. **pkg-2 (uninstrumented)** — stress child `cb99fe14…` hit the 32,768-token
+   ceiling and settled after exactly one turn; the probe produced no visible effect.
+   **Inconclusive, not negative**: with no observable channel, "seam failed" and
+   "probe could not act" are indistinguishable.
+2. **pkg-3 (instrumented)** — added ring-buffer recording of every decision branch
+   plus a readable tool. First read failed (`execute result … must be lossless JSON`:
+   optional `kind` fields serialized as `undefined`, rejected by the cross-realm
+   clone), leaving that run's buffers unreadable. That child also never reached
+   max-tokens — it stopped voluntarily amid progressive generation degradation
+   (CJK-character corruption self-repair loop, ~3,161 of the intended open-ended
+   count). No data.
+3. **pkg-4 (fixed + discriminating)** — JSON round-trip fix, plus a one-shot armable
+   test granting the SAME synchronous-followup treatment to the next OWNER child whose
+   `turn/end` carries `kind:'completed'`. Rationale: delivery of max-tokens `turn/end`
+   to a root listener was already proven live by the watchdog fold (§7/§8), so the
+   remaining unknowns were purely mechanical (listener firing during the loop tail,
+   `agents.get()` mid-dispatch, `followup` callability/enqueue) — answerable with a
+   seconds-long completed child instead of another ~8-minute ceiling burn.
+
+Armed test on cheap child `010df521…` (settled normally afterwards; closing message
+`ok`; projection stats `turns:1 steps:1 decodeTokens:22 llmMs:9906`):
+
+```json
+{"kind":"armed-completed-test-start","id":"010df521-3a09-4bd0-9708-634f6f0e4c8e"}
+{"kind":"followup-threw","label":"completed-armed","id":"010df521-…","status":"running",
+ "followupType":"function",
+ "error":"Error: session append cannot reenter while another append is being published"}
+```
+
+The same listener recorded all 27 subagent-origin events of that child in order
+(`agent/inbox/spliced`, `turn/start`, `step/start`, `user/message` ×4, `session/title`,
+`request/header`, `request/context`, `assistant/chunk` ×12, `assistant/message`,
+`step/end`, `turn/end{completed}`), proving in one run: synchronous root-listener
+delivery during the loop tail, successful `agents.get(childId)` resolution mid-dispatch
+(`status:"running"` — the agent IS still registered), and
+`typeof agent.followup === "function"`. The ONLY failure is the nested-append guard.
+
+### 9.3 Verdict
+
+**The alternative live seam does not exist on this runtime.** A synchronous
+`Agent.followup()` during `turn/end` dispatch can NEVER enqueue: the inbox splice is
+itself a session append, and the runtime forbids nested appends by design. The call
+throws before touching the inbox (atomic per L148→149 ordering), the post-turn
+`hasPending` check sees an empty queue, and the activation exits after its current
+turn. This retroactively explains pkg-2's silent null on the max-tokens child:
+identical throw, sink unreachable.
+
+Corollary for the recovery window: the only moment an enqueue could beat the loop's
+own check is exactly the moment the runtime makes impossible. Any deferred enqueue
+(timer/microtask after the tail) runs after `hasPending` was already consulted —
+synchronous code — and therefore cannot continue the SAME activation; it can only
+start a new activation cycle, i.e. back through the `coldResume` path already blocked
+in §8 (or race the teardown window; deliberately not tested — out of the asked scope,
+and §8's flush latency makes the race unattractive).
+
+### 9.4 Consequences
+
+- v0.1's blocking discrepancy stands unchanged: the official `subagents.followup()`
+  at `subagent/end` remains the only public continuation seam, and §8 documents why
+  it currently fails for freshly settled children. The decision space from §8.5 is
+  narrowed: "detect earlier and enqueue live" is not an escape hatch.
+- No product code was modified for any part of this investigation. The probe plugin
+  was stopped after the experiment (definition retained; zero side effects observed
+  on any child; the armed followup attempt threw atomically).
+- §8.4 observability note, amended: reachable diagnostics ARE possible from dynamic
+  plugins via dynamically registered model tools (used here); `console.warn/error`
+  sinks remain unreachable.
