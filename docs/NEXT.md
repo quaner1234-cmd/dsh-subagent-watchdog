@@ -1,60 +1,55 @@
-# NEXT — resolve a production-grade real AbortSignal, then patch checkpoint-before-followup
+# NEXT — package locally, verify the production-shaped mount, then run one final live acceptance
 
-Status: **resolved and implemented.** The §10 live probe passed all six criteria; the real-`AbortSignal` blocker was resolved against the installed runtime (see "Resolution record" below); the product code has been redesigned around checkpoint-before-followup and is green locally — `node --test test/watchdog.test.mjs`, 38 scenarios over both artifacts (`lib/index.js` + regenerated `plugin/watchdog.host.js`). The expensive final real `max-tokens` end-to-end acceptance has **not** been run yet and is the only remaining pre-publish step.
+Status: the redesigned v0.1 is green locally at commit `7cbf84e`: checkpoint-before-followup is implemented, the duck-typed signal stub is gone, and the suite passes 38 scenarios over both artifacts. `docs/DSH-SEAMS.md` §10–§11 records the live seam evidence and implementation rationale.
 
-One blocker remained before implementation: `subagents.followup(..., { signal })` must receive a **real `AbortSignal`**. The previous sandbox fallback in `neverAbortSignal()` is removed.
+One release-shape gap remains before the final live recovery test: the repository still has **no `package.json` or Cordis/DSH bundle metadata**, so it cannot yet be mounted in the ordinary packaged host shape where the implementation expects the standard host `AbortController` global. Do not spend another full max-token run in the dynamic dev sandbox; §11 already establishes that the sandbox masks this global.
 
-## Current blocking question
+Do not publish to npm or submit to an awesome list in this step. Do not add product features.
 
-Find the smallest official, production-available source of a real `AbortSignal` that an ordinary installed Watchdog plugin can use for the asynchronous recovery operation **without requiring a model/tool call or human interaction**.
+## Step 1 — create the smallest local-installable package
 
-Before changing product code, inspect the installed runtime and verify the exact source. Do not infer names or contracts.
+Before writing metadata, inspect the installed DSH plugin-development guidance/runtime and verify the current official bundle/composition format. Do not infer stale package fields or install commands.
 
-The chosen signal must satisfy all of these:
+Create only the metadata/files required to mount `lib/index.js` as an ordinary local DSH plugin in the full host process. Prefer the smallest package shape. At minimum verify whether the current runtime requires `package.json`, `dsh.bundle`, and/or `cordis.patch.yml`, and use the verified format.
 
-1. It is a genuine host-realm `AbortSignal`, accepted by the same `AbortSignal.any()` path used by cold resume.
-2. It is available to normal plugin execution/event handling; it must not depend on capturing a signal from a temporary diagnostic/model tool call.
-3. It remains valid and non-aborted across the required async window: terminal `session/event` → `sessions.flush()` resolution → `subagent/end` settlement → `subagents.followup()` admission.
-4. Its cancellation semantics are appropriate for plugin teardown. If the plugin/session/runtime is disposed, cancellation is acceptable; it must not abort merely because the originating event callback returned.
-5. It comes from a public/official Cordis/DSH seam or standard host primitive available in the packaged plugin environment. No duck typing, no private fields, no global monkey patch.
+Requirements:
 
-## If a valid signal source is verified
+1. The production entry remains `lib/index.js`; do not move or rewrite working product logic merely for packaging.
+2. No build step should be necessary for a local install if the runtime accepts the existing JS artifact.
+3. Do not add README/discovery/marketing work yet.
+4. Run the existing 38-scenario suite after packaging; packaging must not change behavior.
+5. Install/mount the plugin locally through the same ordinary plugin path a real user would use (local path/package is fine; do not publish).
 
-Then implement the smallest redesign:
+## Step 2 — cheap host-shape verification
 
-1. On a continuable child's first `turn/end { reason.kind: 'max-tokens' }`, start exactly one official `ctx.sessions.flush(childSession)` checkpoint while the Session is live. Do not enqueue or follow up from inside the event callback.
-2. Preserve the existing continue-once/idempotency guard semantics.
-3. On the matching `subagent/end`, await the recorded checkpoint, then perform the restart-safe durable marker check and call official `subagents.followup()` once with the verified real signal.
-4. If the checkpoint fails, the child cannot be verified as continuable, or followup fails, do not retry automatically; notify the parent once and stop.
-5. If the recovery activation later ends in `max-tokens` or explicit error, notify once and never continue again.
-6. Remove the invalid duck-typed `neverAbortSignal()` fallback; do not retain dead compatibility code.
-7. Regenerate `plugin/watchdog.host.js` from the source artifact and keep both artifacts byte/behavior aligned.
-8. Extend tests to cover at least: checkpoint success, checkpoint rejection, duplicate terminal/end delivery while checkpoint is pending, restart marker behavior, real-signal plumbing at the official followup boundary, and no second continuation.
-9. Run the full suite against both artifacts.
-10. Update `AGENTS.md`, `DSH-SEAMS.md`, and this file with the exact implementation evidence; commit and push.
+Before the final max-token recovery run, prove on the packaged composition mount that:
 
-Do **not** run the expensive final real `max-tokens` end-to-end acceptance test in this step. Stop after the redesigned implementation is green locally and pushed so it can be reviewed before the final live burn.
+- the Watchdog is actually loaded in the ordinary host process;
+- the recovery code sees a genuine standard `AbortController` / `AbortSignal` environment, not the dynamic Cordis sandbox;
+- loading the plugin causes no behavior change for a normal completed continuable child.
 
-## Kill condition
+Use a cheap probe or observable diagnostic only if needed. Do not add a permanent product UI/tool solely for this verification.
 
-If no production-available real `AbortSignal` source satisfying the five criteria exists in the normal plugin execution path, stop and document that limitation. Do not work around it with a fake signal, timer, polling loop, private API, or interactive tool-call dependency. Reconsider the product boundary instead.
+If the packaged mount still lacks a genuine `AbortController`, STOP and document the discrepancy. Do not add a fake signal or private workaround.
 
-## Resolution record (this step)
+## Step 3 — one final real max-tokens end-to-end acceptance
 
-**Signal source — verified against the installed runtime (`@deepseek-ai/dsh` 0.1.1-rc.2):**
+Only after Steps 1–2 pass, run exactly one final native continuable-child recovery test through the packaged mount.
 
-- The five criteria are satisfied by a fresh `new AbortController().signal` created inside the plugin's own recovery attempt. (1) It is a genuine host-realm `AbortSignal` accepted by the `AbortSignal.any()` fusion in `agentLoop.resumeWith` (`dsh-agent-loop/lib/index.js` ~L1292). (2) It needs no model/tool call: first-party plugins construct controllers in normal execution — `dsh-tool-subagent/lib/index.js` L257 wraps its background one-shot run exactly this way. (3) The watchdog never aborts it, so it stays valid and non-aborted across the whole terminal-event → flush → settlement → admission window (§10's probe observed a captured signal still non-aborted minutes later). (4) It does not abort because an event callback returned; teardown-cancellation is acceptable-but-not-required for a sub-second attempt. (5) `AbortController` is a standard host primitive of the packaged plugin environment.
-- Environment boundary, verified not assumed: the dynamic-package dev sandbox (`dsh-cordis-host-runner` `createSandbox`) provides only `ctx/harness/console/btoa/atob/TextEncoder/TextDecoder` plus Node-API traps; VM contexts carry no platform globals, so `AbortController` is unavailable there. No capture-free official signal source exists in that realm (cordis core exposes no fiber signal; no DSH service returns one). Consequence: a dynamically mounted dev package fails recovery contained at signal construction; the final live acceptance must run on the packaged composition shape, which is the honest production mount anyway.
-- Per NEXT instruction, the duck-typed `neverAbortSignal()` fallback was deleted outright — no compatibility shim remains (`grep neverAbortSignal` over both artifacts: 0 hits).
+Before burning a default 32,768-token output, inspect whether the official native continuable start path lets the test child use a deliberately small `maxTokens` through a supported public option while preserving the same `stopReason: 'max-tokens'` lifecycle. If yes, use that cheaper deterministic ceiling. If not, run one default real ceiling test. Do not alter product code to make the test easier.
 
-**Implementation (smallest redesign, all ten steps done):**
+Acceptance criteria:
 
-1. Terminal `turn/end { kind: 'max-tokens' }` starts exactly one `ctx.sessions.flush(childSession)` via `startDurabilityCheckpoint`, gated on chain-not-engaged + mode ≠ one-shot + no checkpoint yet; nothing is enqueued or followed up inside the callback.
-2. Continue-once/idempotency guard semantics unchanged (`pending`/`delivered`/`notified`, durable-marker scan).
-3. On the matching `subagent/end`, the decision awaits the recorded checkpoint before the restart-safe durable verification, then calls `subagents.followup()` once with the attempt-scoped real signal (shared by the persistence inspection and the followup).
-4–5. Checkpoint failure → `checkpoint-failed` notice once, chain spent, no retry; followup failure → existing mark-before-act `delivery-failed`; recovered-epoch failures → one notice, never continued again. Unverifiable mode stays fail-closed silent (AC7a preserved).
-6–7. Stub removed; `plugin/watchdog.host.js` regenerated via `scripts/sync-dynamic.mjs` (byte-derived test enforces alignment).
-8–9. Suite extended to 38 scenarios: AC11 (one checkpoint on the live child session, strictly before followup), AC12 (rejected checkpoint → one `checkpoint-failed` notice, no followup, never retried), AC12b (synchronous admission throw contained), AC13 (duplicate genuine end while the checkpoint is pending → one continuation, no false notice), real-signal assertions at the followup boundary (AC1) and the inspection boundary (AC8). All green over both artifacts.
-10. This file, `AGENTS.md`, and `DSH-SEAMS.md` §11 carry the evidence; committed and pushed.
+1. A real native continuable child ends its first activation with explicit `max-tokens`.
+2. Watchdog starts exactly one official `ctx.sessions.flush(childSession)` checkpoint while the Session is live.
+3. After settlement + checkpoint resolution, one official `subagents.followup()` is accepted with a genuine `AbortSignal`.
+4. The **same durable child session id** resumes in a new activation epoch (new runId).
+5. Exactly one automatic continuation is ever delivered for the chain.
+6. If the resumed activation completes normally, Watchdog emits no recovery-failed notice. If it fails again, it emits at most one notice and performs no second continuation.
+7. No timer, polling, custom persistence, private runtime API, or model-based recovery judgment is introduced.
 
-**Still open:** only the final real `max-tokens` end-to-end acceptance run on a production-shaped (packaged) mount.
+Record the exact live evidence in `docs/DSH-SEAMS.md`, update `AGENTS.md` status, run the full local suite once more, commit and push.
+
+If the final live acceptance passes, STOP feature development. The next phase is distribution only: README + package metadata polish + local install recheck + npm publication + GitHub description/topics (`dsh-plugin`) + ecosystem submission/discovery work.
+
+If it fails, stop and document the discrepancy rather than patching around it.
