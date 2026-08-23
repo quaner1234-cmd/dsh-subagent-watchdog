@@ -1,67 +1,52 @@
-# NEXT — publication gate
+# NEXT — npm publication authorized
 
-Status: **v0.1.0 release candidate ready**. Feature development is stopped. The release candidate passed 38/38 deterministic scenarios, fresh-clone verification, clean `npm pack`, real tarball installation through `dsh plugin --profile <profile> add`, byte-identity checks, and packaged-mount composition smoke checks. The public README calibrates the final live evidence against the recorded protocol deviation.
+Status: **v0.1.0 release candidate ready and npm publication explicitly approved by the user on 2026-08-23 at ~20:40 UTC+8.** Feature development remains stopped.
 
-Nothing external has been published yet.
+The release candidate passed 38/38 deterministic scenarios, fresh-clone verification, clean `npm pack`, real tarball installation through `dsh plugin --profile <profile> add`, byte-identity checks, and packaged-mount composition smoke checks. The public README calibrates the final live evidence against the recorded protocol deviation.
 
-## Current gate status — npm authentication blocked
+## Gate status
 
-Publication Step 1 was executed on 2026-08-23 using only the workspace-local npm cache (`--cache ./.local-run/.npm-cache`). Results:
+Pre-publish identity/name checks are now satisfied:
 
-- `npm whoami` → **FAILED with `ENEEDAUTH`**. This machine is not authenticated to the npm public registry. `~/.npmrc` contains no auth token, there is no repo `.npmrc`, and no `NPM_CONFIG*` environment credential was present. No login flow was attempted.
-- `npm view dsh-subagent-watchdog` → public registry **404**, so the unscoped package name is still unregistered at the time of the check.
-- Because the pulled commit changed packaged README bytes, `npm pack --dry-run` and `npm test` were rerun: pack succeeded with exactly five intended files (`LICENSE`, `README.md`, `cordis.patch.yml`, `lib/index.js`, `package.json`) and the suite remained **38/38 green**.
+- `npm whoami --registry=https://registry.npmjs.org/ --cache ./.local-run/.npm-cache` returned **`quaner1234`**.
+- The public npm registry check for `dsh-subagent-watchdog` returned **404 / unregistered** before approval.
+- Latest affected-package checks remained green: `npm pack --dry-run` shipped exactly `LICENSE`, `README.md`, `cordis.patch.yml`, `lib/index.js`, `package.json`; `npm test` remained **38/38**.
+- Continue using the workspace-local npm cache; do not change global npm cache ownership for this release.
 
-**Human action required:** authenticate this machine to the intended npm publisher account, then rerun only `npm whoami` (and recheck package-name availability immediately before publish). Do not publish until the identity check succeeds.
+## Authorized action — Step 2 only
 
-Use the workspace-local npm cache; do not change ownership of the global npm cache merely to unblock this release.
+The user has explicitly approved publishing **`dsh-subagent-watchdog@0.1.0` to npm**.
 
-Suggested interactive login from the repo:
+Execute only this publication step:
+
+1. Pull latest `origin/main` and confirm the intended release commit/files are unchanged except for this publication-gate documentation.
+2. Recheck package-name availability immediately before publish. If the name is no longer available, **STOP** and report.
+3. Confirm `npm whoami` still returns `quaner1234` using the workspace-local cache. If authentication fails, **STOP** and report.
+4. Publish `dsh-subagent-watchdog@0.1.0` to the public npm registry using the reviewed package contents. Do not change product code or metadata merely to make publish succeed.
+5. Immediately verify the public registry exposes version `0.1.0` and the expected package metadata.
+6. In a fresh isolated DSH profile, install from the public npm registry using:
 
 ```sh
-npm login --registry=https://registry.npmjs.org/ --auth-type=web --cache ./.local-run/.npm-cache
+dsh plugin --profile <scratch> add dsh-subagent-watchdog
 ```
 
-Then verify:
+7. Verify bundle reconciliation/mount succeeds from the public package. A packaging/install smoke check is sufficient; do **not** repeat the max-tokens live acceptance burn.
+8. Record the publication/version/public-install evidence in this file (or a small release record), commit and push.
+9. **STOP and report.** Do not apply GitHub description/topics, create a tag/release, or submit to an awesome list in this step.
 
-```sh
-npm whoami --registry=https://registry.npmjs.org/ --cache ./.local-run/.npm-cache
-```
+## Hard stop conditions
 
-If there is no npm account yet, create/verify one first. npm requires a verified email address to publish, and current npm publishing requires either account 2FA or an eligible granular token configuration.
+- npm auth failure => STOP.
+- package name/version conflict => STOP.
+- publish failure => STOP; report the exact npm error, do not improvise around it.
+- public registry verification failure => STOP.
+- public DSH install/mount failure => STOP before any GitHub release/discovery work.
+- No more product behavior changes in v0.1.0 unless a reproducible release-blocking defect is found and separately approved.
 
-## Publication order
+## Later steps — not yet authorized
 
-Do not add product features. External publication requires explicit user approval.
+After npm publication and public-install verification pass, wait for a new explicit approval before:
 
-1. **Pre-publish npm identity/name check**
-   - From the repo, use a workspace-local npm cache rather than changing the global root-owned cache, e.g. `--cache ./.local-run/.npm-cache`.
-   - Verify `npm whoami` succeeds for the intended publisher account.
-   - Verify `dsh-subagent-watchdog` is still available on the npm registry immediately before publication.
-   - Run one final `npm pack --dry-run` / `npm test` only if packaged files changed since the release-candidate check.
-
-2. **Publish npm first**
-   - Publish `dsh-subagent-watchdog@0.1.0` from the reviewed commit.
-   - Immediately verify the registry page/version and test the public install command in a fresh isolated profile:
-     `dsh plugin --profile <scratch> add dsh-subagent-watchdog`.
-   - If public install fails, STOP before creating a release or ecosystem submission.
-
-3. **Apply GitHub discovery metadata**
-   - Description: `DSH plugin that auto-continues a native continuable subagent once when it ends with explicit max-tokens termination — then stops. No loops, no timers, official seams only.`
-   - Topics: `dsh-plugin`, `dsh`, `cordis`, `subagent`, `max-tokens`, `watchdog`.
-   - Repository currently has no description/topics; apply only after npm publication succeeds.
-
-4. **Tag / GitHub Release**
-   - Tag the exact published commit as `v0.1.0` and create a concise release from the reviewed README/release copy.
-   - Do not retag a different commit under the same version.
-
-5. **Awesome-list submission — WAIT FOR ELIGIBILITY**
-   - Current `awesome-dsh-plugin` rules require a real working plugin, `dsh.bundle`, `dsh-plugin` topic, accurate description, repository age **>= 1 day**, and **>= 10 commits**.
-   - This repository was created at `2026-08-23T02:38:54Z`; the one-day age gate is not satisfied until **2026-08-24T02:38:54Z** (10:38:54 at UTC+8). Commit count is already above 10.
-   - After the age gate and after npm/public-install verification, submit one plugin YAML entry only, following the current contributing guide; do not hand-edit the generated awesome-list READMEs.
-
-## Stop conditions
-
-- Any npm auth/name/public-install failure => STOP and report; do not improvise around it.
-- Any release metadata discrepancy => fix docs/metadata, then re-run only the checks affected by that change.
-- No more product behavior changes in v0.1.0 unless a reproducible release-blocking defect is found.
+1. applying GitHub description/topics;
+2. tagging the exact published commit as `v0.1.0` and creating a GitHub Release;
+3. submitting to `awesome-dsh-plugin` after its repository-age gate is satisfied (repo created `2026-08-23T02:38:54Z`, so >=1 day at `2026-08-24T02:38:54Z`, i.e. 10:38:54 UTC+8; commit-count gate is already satisfied).
