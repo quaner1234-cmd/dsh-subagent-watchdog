@@ -1,5 +1,15 @@
 # NEXT — close the single blocking guard, then implement v0.1
 
+Status (current): **blocking guard verified and v0.1 implemented; all acceptance
+criteria pass locally.** The verified answer lives in
+[DSH-SEAMS.md](DSH-SEAMS.md) §6a ("v0.1 continue-once guard"); the implementation
+is [../lib/index.js](../lib/index.js) with the derived dynamic body
+[../plugin/watchdog.host.js](../plugin/watchdog.host.js); the acceptance suite is
+[../test/watchdog.test.mjs](../test/watchdog.test.mjs) (`node --test
+test/watchdog.test.mjs` — 28 scenarios over both artifacts against real cordis
+dispatch, the real subagent lifecycle emitter, and real session appends; the
+recovery seam itself is spied at the exact official call boundary).
+
 Read [../AGENTS.md](../AGENTS.md) and [DSH-SEAMS.md](DSH-SEAMS.md) first.
 
 ## Current product decision
@@ -41,13 +51,17 @@ Only after the guard is verified:
 
 ## Acceptance criteria
 
-- One continuable child ending in `max-tokens` is automatically continued exactly once.
-- The same child cannot be auto-continued twice because of a second `max-tokens` epoch or duplicate end event.
-- A successful resumed child completes normally with no extra watchdog action.
-- A resumed child that fails again causes one parent notice and no further recovery.
-- Provider/runtime errors are never auto-retried in v0.1.
-- One-shot subagents are never recovered in v0.1.
-- No UI, dashboard, DAG, team manager, heuristic timeout/stuck detector, custom orchestration layer, or extra LLM is added.
+- One continuable child ending in `max-tokens` is automatically continued exactly once. ✅ (AC1)
+- The same child cannot be auto-continued twice because of a second `max-tokens` epoch or duplicate end event. ✅ (AC2, AC9)
+- A successful resumed child completes normally with no extra watchdog action. ✅ (AC3)
+- A resumed child that fails again causes one parent notice and no further recovery. ✅ (AC2, AC4)
+- Provider/runtime errors are never auto-retried in v0.1. ✅ (AC5, AC4)
+- One-shot subagents are never recovered in v0.1. ✅ (AC6)
+- No UI, dashboard, DAG, team manager, heuristic timeout/stuck detector, custom orchestration layer, or extra LLM is added. ✅ (static assertions + listener-only surface)
+
+Additional covered behavior: restart-safe guard via the durable continuation
+marker (AC8), failed delivery keeps the chain engaged and notifies honestly
+(AC10), absent parent contained skip, steer-vs-followup parent scheduling.
 
 ## Distribution is not part of this step
 

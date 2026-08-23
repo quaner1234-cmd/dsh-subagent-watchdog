@@ -1,7 +1,10 @@
 # DSH-SEAMS — verified runtime seams for `dsh-subagent-watchdog` v0.1
 
-Status: findings document. **No plugin code has been written.** Everything below was
-verified against the live DSH runtime of this deployment before any implementation.
+Status: findings document; §6 open items closed and §6a continue-once guard
+verified against the installed runtime. v0.1 implemented
+([../lib/index.js](../lib/index.js) + dynamic body
+[../plugin/watchdog.host.js](../plugin/watchdog.host.js)) and acceptance-tested on
+real cordis/dsh-subagent/dsh-session dispatch ([../test/watchdog.test.mjs](../test/watchdog.test.mjs)).
 
 Runtime under inspection: `@deepseek-ai/dsh` **0.1.1-rc.2** (the process serving this
 session), running the **`standard`** agent preset (confirmed from this session's own
@@ -333,17 +336,110 @@ auto-interrupt, auto-redelegate. v0.1 notifies; it never acts on a child by itse
 
 ---
 
-## 6. Open items to confirm at implementation time (via the cordis workflow's
-`cordis_inspect_query` / `Builtin.listBuiltins`, before `cordis_define`)
+## 6. Open items — CLOSED at implementation time (verified against the installed runtime)
 
-1. Exact listener-visibility semantics for a root-mounted dynamic plugin on
-   `subagent/start|end` (scope-carrier composition) in the live mount.
-2. Whether to reuse source kind `subagent-settled` for watchdog notices or register a
-   dedicated merge-extensible kind; confirm UI rendering behavior for unknown kinds.
-3. Whether `dsh-llm-retry` is mounted in production host compositions (affects whether
-   transient failures ever reach `turn/end` as `error`).
-4. Cold-resume timing: confirm `subagent/start` fires before the resumed turn's events
-   reach `session/event`, so the child-id filter never misses the terminal record.
+All four items were closed by source inspection of the exact packages loaded by
+this deployment's process (`@deepseek-ai/dsh` **0.1.1-rc.2**), using §0's method.
+
+1. **Listener visibility for a root-mounted dynamic plugin on `subagent/start|end`
+   — CONFIRMED: a root-mounted dynamic plugin sees every pair.**
+   `DynamicCordisRunnerService` is a host-plane Service (`this.rootCtx = ctx`);
+   `requireGroup()` mounts the `cordis-dynamic` group under that root context and
+   `startHostHalf()` mounts every dynamic host half as its child
+   (`dsh-cordis-host-runner/lib/index.js`). Root/host contexts carry no scope tag,
+   and `scopeTarget()`'s carrier filter "admits untagged listeners globally"
+   (`dsh-scope/lib/index.js`); cordis core `dispatch()` keeps a listener when
+   `hook.global || !filter || filter.call(thisArg, hook.ctx)`. Listener callbacks
+   receive `(info)` only — the carrier is the dispatch `thisArg`.
+2. **Notice source kind — dedicated merge-extensible kinds are safe.**
+   The client conversation UI classifies any non-`user` source as a generic context
+   row; its `contextProvenance()` switch renders unknown kinds as
+   `{role:'inject', label:<kind>}` (never dropped), and `'notice'`/`'relay'` are
+   known forms (`dsh-client-runtime/lib/client.js`). v0.1 therefore tags
+   continuations `{kind:'subagent-watchdog', form:'relay'}` and parent notices
+   `{kind:'subagent-watchdog', form:'notice'}`.
+3. **`dsh-llm-retry` IS mounted in production host compositions.**
+   `@deepseek-ai/dsh-base/cordis.patch.yml` inserts row `llm-retry →
+   '@deepseek-ai/dsh-llm-retry'` unconditionally ("the shared core of every dsh
+   profile"); neither the web-app bundle patch nor this deployment's profile patch
+   touches it. A durable `turn/end {kind:'error'}` is therefore post-retry-
+   exhaustion or non-retryable — high-confidence terminal.
+4. **Cold-resume ordering is safe: `subagent/start` strictly precedes the resumed
+   turn's events.** `followup()` on an absent child → `coldResume()` →
+   `materializeTracked()`: `agents.resume()` restores without running a turn, then
+   `observer.start(handle.agent)` emits synchronously, and only afterwards does
+   `submitMaterialized()` accept the prompt; `session/event` dispatch happens
+   synchronously inside `Session.append()`. Residual race (child events appended in
+   the provider's start window) is covered by lazy admission of unknown
+   `origin:'subagent'` sessions in the plugin's `session/event` listener.
+
+Additional implementation-time verifications feeding the guard design:
+
+5. **`followup` options flow**: `SubagentContinuationManager.followup(parent,
+   childId, content, options)` forwards `options.source` verbatim into
+   `createUserMessage({content, source})` and requires a signal with
+   `throwIfAborted` (`options.signal`); the persistence layer consumes only
+   `aborted` / `throwIfAborted` / `addEventListener('abort')` /
+   `removeEventListener` from it.
+6. **Dynamic-package sandbox constraints** (`dsh-cordis-host-runner`):
+   globals are `ctx`, `harness`, `console`, `btoa`, `atob`, `TextEncoder`,
+   `TextDecoder` + ECMAScript intrinsics; timers/`require`/`fetch` are traps and
+   **there is no `AbortController`**; `ctx.get(name)` works undeclared and returns
+   services whose methods forward to the real instance (non-Context return values
+   pass through, so live Agents/Sessions are reachable). Property access outside
+   the whitelist throws, so the plugin logs through `console` only.
+7. **Settlement ordering**: the manager deletes the Activation, releases ownership
+   and delivers its own settlement notice BEFORE `observer.settle()` emits
+   `subagent/end` — so a watchdog continuation initiated from the end event always
+   cold-resumes (or queues behind disposal) exactly like the verified
+   `send_message`-to-ready-child path, and never races admission state.
+
+## 6a. v0.1 continue-once guard (verified)
+
+The blocking question from `docs/NEXT.md`: *what is the smallest reliable
+identity/guard answering "has this child task/recovery chain already received its
+one watchdog continuation?"*
+
+**Answer: guard key = the child's durable session id; guard state = (a)
+process-lifetime sets in the plugin plus (b) the child's own durable session log.**
+
+- **Identity.** Each activation epoch mints a fresh `runId`
+  (`randomUUID()` in `observeRun` / per-epoch observers), so runId cannot key the
+  guard. The child session id is stable across epochs, cold resumes, and restarts
+  (it names the persisted log) — it is the chain identity.
+- **Process-lifetime layer.** Two scalar sets inside the plugin instance:
+  - `engaged` — added SYNCHRONOUSLY in the `subagent/end` handler before any async
+    work, so duplicate deliveries, repeated settlements, or sibling events can
+    never initiate two continuations (single-threaded handlers make this atomic).
+    Released only when recovery was never actually spent (unverifiable mode, no
+    live parent), because then no budget was consumed.
+  - `notified` — caps the "recovery failed" parent notice at one per chain per
+    process.
+- **Restart-safe layer (official durable seams only).**
+  - The continuation itself is delivered via `subagents.followup(...,
+    {source:{kind:'subagent-watchdog', form:'relay', …}})`; `options.source`
+    becomes the delivered message's source verbatim
+    (`createUserMessage({content, source})`), and an accepted inbox message is
+    appended to the child's session as a `user/message` event — i.e. **the marker
+    IS a durable session event of the child's own official log**, written by the
+    runtime, not by us.
+  - Before initiating a continuation, the plugin reads the child's log through the
+    official `sessionPersistence.inspect(childId, signal?)` seam (live-preferred;
+    the same seam `coldResume` uses to classify restored children). If any event
+    matches `type === 'user/message' && data.source.kind === 'subagent-watchdog'`,
+    recovery is skipped and the still-failing chain notifies the parent once.
+    This also supplies durable mode classification after remount (the restored
+    descriptor never replays through `session/event`).
+  - No custom storage, no projection writes, no settings writes.
+- **Fail-closed behavior.** Unverifiable mode (no descriptor live or durable) →
+  no recovery, silent. One-shot mode → never recovered (no official resume seam).
+  Errors as first observed outcome → never recovered (runtime settlement notice
+  already informs continuable parents). Parent not live → skip (warn only).
+- **Documented limitation.** A crash between followup acceptance and the message
+  becoming durable loses the marker. In that window the child never received the
+  first continuation, so a later attempt still leaves "at most one RECEIVED
+  continuation per chain" intact — the guarantee is stated about received
+  continuations, not attempts.
 
 ## 7. Evidence index (primary sources quoted in this doc)
 

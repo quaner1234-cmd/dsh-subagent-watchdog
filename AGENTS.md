@@ -32,4 +32,11 @@ No dashboard, no team manager, no DAG, no heuristic stuck detector, no custom or
 
 ## Status
 
-Runtime seam survey complete. Product scope narrowed to a single recovery action. Before implementation, close the one blocking question in [docs/NEXT.md](docs/NEXT.md): how to identify and persist/guard the single allowed automatic continuation safely across activation epochs.
+v0.1 implemented; the blocking guard question is answered in
+[docs/DSH-SEAMS.md](docs/DSH-SEAMS.md) §6a and all acceptance criteria pass
+locally (`node --test test/watchdog.test.mjs`; 28 scenarios over both artifacts
+against real cordis/dsh-subagent/dsh-session dispatch, recovery seam spied at the
+official call boundary). Sources: [lib/index.js](lib/index.js),
+[plugin/watchdog.host.js](plugin/watchdog.host.js), [test/watchdog.test.mjs](test/watchdog.test.mjs).
+Remaining live step: define/run the dynamic package once on a `cordis`-preset
+host (needs interactive approval there) to observe one real end-to-end recovery.
