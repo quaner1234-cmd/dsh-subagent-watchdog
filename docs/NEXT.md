@@ -1,6 +1,11 @@
 # NEXT — fix duplicate-end guard, then run one live recovery
 
-Status: v0.1 implementation exists at commit `4ecfea8` and the local suite passes, but review found one blocking test/guard gap that must be closed before the live approval test.
+Status: the duplicate-end review finding below is FIXED — the guard now keeps a
+per-chain `pending`/`delivered` state (`lib/index.js`), and AC9b delivers two
+genuine `subagent/end` events for the same child while the first recovery
+decision is parked in-flight, asserting all three required outcomes. Suite: 30
+scenarios over both artifacts, all passing. Remaining before distribution: the
+live end-to-end recovery in "Then" below.
 
 Read [../AGENTS.md](../AGENTS.md) and [DSH-SEAMS.md](DSH-SEAMS.md) first. Do not broaden product scope.
 

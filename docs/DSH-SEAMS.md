@@ -407,14 +407,22 @@ process-lifetime sets in the plugin plus (b) the child's own durable session log
   (`randomUUID()` in `observeRun` / per-epoch observers), so runId cannot key the
   guard. The child session id is stable across epochs, cold resumes, and restarts
   (it names the persisted log) — it is the chain identity.
-- **Process-lifetime layer.** Two scalar sets inside the plugin instance:
-  - `engaged` — added SYNCHRONOUSLY in the `subagent/end` handler before any async
-    work, so duplicate deliveries, repeated settlements, or sibling events can
-    never initiate two continuations (single-threaded handlers make this atomic).
-    Released only when recovery was never actually spent (unverifiable mode, no
+- **Process-lifetime layer.** One scalar state map plus one set inside the plugin
+  instance (revised after the duplicate-end review finding in `docs/NEXT.md`):
+  - `chains` (`'pending' | 'delivered'`) — `'pending'` is entered SYNCHRONOUSLY in
+    the `subagent/end` handler before any async work, so duplicate deliveries,
+    repeated settlements, or sibling events can never initiate two continuations
+    (single-threaded handlers make this atomic). End events observed while
+    `'pending'` are duplicates of the original settlement epoch: they neither
+    continue nor notify. The state flips to `'delivered'` only when the one
+    `followup()` attempt has been made (including its marked failure) or a prior
+    delivery was proven from the durable log; from `'delivered'`, a genuinely
+    later failing activation notifies once. The entry is deleted — releasing the
+    chain — only when recovery was never actually spent (unverifiable mode, no
     live parent), because then no budget was consumed.
   - `notified` — caps the "recovery failed" parent notice at one per chain per
-    process.
+    process; combined with `'delivered'` this makes the third phase (recovery
+    failed again → notify once) unreachable for duplicate original-end events.
 - **Restart-safe layer (official durable seams only).**
   - The continuation itself is delivered via `subagents.followup(...,
     {source:{kind:'subagent-watchdog', form:'relay', …}})`; `options.source`

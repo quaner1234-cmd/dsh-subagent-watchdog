@@ -33,10 +33,16 @@
  * continue-once guard"):
  * - Identity: the child's DURABLE session id (stable across activation epochs;
  *   each epoch mints a fresh runId, so runId cannot key the guard).
- * - Process-lifetime state: an `engaged` set marks a chain whose one watchdog
- *   continuation was initiated; a `notified` set caps parent notices at one per
- *   chain per process. Both are consulted synchronously inside event handlers,
- *   so duplicate or repeated events cannot re-trigger.
+ * - Process-lifetime state: a per-chain map distinguishes 'pending' (the first
+ *   max-tokens end was accepted; the durable verification / followup decision
+ *   is still in flight) from 'delivered' (the one continuation was handed to
+ *   followup, or a prior delivery was proven from the durable log); a
+ *   `notified` set caps parent notices at one per chain per process. All are
+ *   consulted synchronously inside event handlers, so duplicate or repeated
+ *   end deliveries of the original settlement epoch can neither initiate a
+ *   second continuation nor fake a parent notice while the decision is in
+ *   flight. Only a genuinely later failing activation after 'delivered'
+ *   reaches the parent.
  * - Restart safety: before initiating a continuation the plugin reads the
  *   child's own durable log through the official `sessionPersistence.inspect()`
  *   seam and skips recovery when a prior watchdog continuation message is
@@ -234,8 +240,17 @@ function apply(ctx) {
 	 * { parentSessionId?, mode?, lastTurnEnd? }.
 	 */
 	const children = new Map()
-	/** Chains whose single watchdog continuation was initiated (process lifetime). */
-	const engaged = new Set()
+	/**
+	 * Recovery-chain states (process lifetime), keyed by durable child id.
+	 * 'pending': the first max-tokens end was accepted and the async durable
+	 * verification / followup decision is still in flight; 'delivered': the
+	 * one watchdog continuation was spent (delivered, marked failed attempt,
+	 * or proven already durable). The third phase — recovery failed again /
+	 * notify once — is the 'delivered' state plus the `notified` cap below.
+	 */
+	const CHAIN_PENDING = 'pending'
+	const CHAIN_DELIVERED = 'delivered'
+	const chains = new Map()
 	/** Chains whose recovery-failure notice was already delivered (per process). */
 	const notified = new Set()
 
@@ -367,13 +382,19 @@ function apply(ctx) {
 			// no authorized followup and no reachable notice channel.
 			const parentSessionId = child?.parentSessionId ?? resolveParentSessionId(ctx, childId)
 
-			// Guard fast path: this chain already had its one continuation (or a
-			// sibling settlement just engaged it). A recovery attempt that fails
-			// again — max-tokens or explicit error — reaches the parent once.
-			if (engaged.has(childId)) {
-				if (stopReason === 'max-tokens' || stopReason === 'error') {
-					notifyOnce(parentSessionId, childId, stopReason, consumeFailure(child))
-				}
+			// Guard: branch purely on this chain's recovery state.
+			const chainState = chains.get(childId)
+			if (chainState === CHAIN_PENDING) {
+				// A repeated/duplicate end of the ORIGINAL settlement epoch while
+				// the first recovery decision is still in flight is not evidence
+				// of a failed recovery: neither continue nor notify.
+				return
+			}
+			if (chainState === CHAIN_DELIVERED) {
+				// The one continuation is spent; a genuinely later activation
+				// failing again — max-tokens or explicit error — reaches the
+				// parent exactly once.
+				notifyOnce(parentSessionId, childId, stopReason, consumeFailure(child))
 				return
 			}
 
@@ -382,9 +403,10 @@ function apply(ctx) {
 			// settlement notice.
 			if (stopReason !== 'max-tokens') return
 
-			// Engage synchronously so duplicate/repeated settlements can never
-			// initiate a second continuation, then verify durability off-thread.
-			engaged.add(childId)
+			// Enter 'pending' synchronously so duplicate/repeated settlements of
+			// the original epoch can never initiate a second continuation, then
+			// verify durability off-thread.
+			chains.set(childId, CHAIN_PENDING)
 			Promise.resolve()
 				.then(async () => {
 					// Restart-safe verification against the child's own durable
@@ -392,24 +414,26 @@ function apply(ctx) {
 					// continuation marker.
 					const durable = await inspectDurable(childId)
 					if (durable.mode !== 'continuable' && mode !== 'continuable') {
-						// The budget was not spent; release the slot so a later
+						// The budget was not spent; release the chain so a later
 						// epoch can decide again with better information.
-						engaged.delete(childId)
+						chains.delete(childId)
 						warn(`child ${childId} is not verifiably continuable; recovery skipped`)
 						return
 					}
 					if (durable.continued) {
 						// Restart safety: this child's own durable log already
-						// carries a watchdog continuation — never send another.
+						// carries a watchdog continuation — treat that prior
+						// delivery as this chain's one continuation.
+						chains.set(childId, CHAIN_DELIVERED)
 						warn(`child ${childId} already carries a watchdog continuation; not continuing again`)
 						notifyOnce(parentSessionId, childId, stopReason, consumeFailure(child))
 						return
 					}
 					const parent = ctx.get('agents')?.get(parentSessionId)
 					if (parent === undefined) {
-						// No authorized channel exists right now; release the slot
+						// No authorized channel exists right now; release the chain
 						// (a later epoch may find the parent live again).
-						engaged.delete(childId)
+						chains.delete(childId)
 						warn(`parent ${parentSessionId ?? '(unresolved)'} is not live; recovery skipped`)
 						return
 					}
@@ -426,14 +450,21 @@ function apply(ctx) {
 							},
 							signal: neverAbortSignal(),
 						})
+						// Delivered — marked only after followup resolves, so an end
+						// event racing the await is still treated as a duplicate of
+						// the original epoch, never as a failed recovery. From here
+						// on only a genuinely later failing activation can notify.
+						chains.set(childId, CHAIN_DELIVERED)
 					} catch (error) {
 						// The attempt stands (mark-before-act): this chain keeps
 						// its one slot even though nothing was received.
+						chains.set(childId, CHAIN_DELIVERED)
 						warn(`continuation delivery to child ${childId} failed:`, error)
 						notifyOnce(parentSessionId, childId, stopReason, consumeFailure(child), 'delivery-failed')
 					}
 				})
 				.catch((error) => {
+					chains.set(childId, CHAIN_DELIVERED)
 					warn(`recovery decision for child ${childId} failed:`, error)
 					notifyOnce(parentSessionId, childId, stopReason, consumeFailure(child), 'delivery-failed')
 				})

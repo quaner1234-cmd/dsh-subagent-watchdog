@@ -33,10 +33,11 @@ No dashboard, no team manager, no DAG, no heuristic stuck detector, no custom or
 ## Status
 
 v0.1 implemented; the blocking guard question is answered in
-[docs/DSH-SEAMS.md](docs/DSH-SEAMS.md) §6a and all acceptance criteria pass
-locally (`node --test test/watchdog.test.mjs`; 28 scenarios over both artifacts
-against real cordis/dsh-subagent/dsh-session dispatch, recovery seam spied at the
-official call boundary). Sources: [lib/index.js](lib/index.js),
+[docs/DSH-SEAMS.md](docs/DSH-SEAMS.md) §6a, the duplicate-end review finding is
+fixed (per-chain `pending`/`delivered` guard state + AC9b), and all acceptance
+criteria pass locally (`node --test test/watchdog.test.mjs`; 30 scenarios over
+both artifacts against real cordis/dsh-subagent/dsh-session dispatch, recovery
+seam spied at the official call boundary). Sources: [lib/index.js](lib/index.js),
 [plugin/watchdog.host.js](plugin/watchdog.host.js), [test/watchdog.test.mjs](test/watchdog.test.mjs).
 Remaining live step: define/run the dynamic package once on a `cordis`-preset
 host (needs interactive approval there) to observe one real end-to-end recovery.

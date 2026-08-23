@@ -500,6 +500,89 @@ for (const artifact of artifacts) {
 		assert.deepEqual(parent.calls, [])
 	})
 
+	test(`[${artifact.id}] AC9b: duplicate GENUINE subagent/end while the recovery decision is pending → one continuation, no false notice; later real failure notifies once`, async (t) => {
+		const h = await makeHost(t)
+
+		// Gate the guard's durable inspection so the first recovery decision is
+		// observably IN FLIGHT while the duplicate end event is delivered.
+		let releaseInspect
+		h.root.provide('sessionPersistence', {
+			inspectCalls: [],
+			inspect(id) {
+				this.inspectCalls.push(id)
+				return new Promise((resolveInspection) => {
+					releaseInspect = () => resolveInspection({
+						meta: {},
+						events: [descriptor('continuable')],
+					})
+				})
+			},
+		})
+
+		await h.root.plugin(await artifact.load())
+		const parent = makeAgent('parent-1', 'idle')
+		h.agentsStore.register(parent)
+
+		// Original epoch: continuable child ending in max-tokens.
+		const first = spawnOneShot(h, parent, {
+			events: [descriptor('continuable'), turnEnd({ kind: 'max-tokens' })],
+		})
+		await first.ensureStarted
+
+		// A second GENUINE run of the same child (fresh runId, same durable id)
+		// settles identically — a true second `subagent/end` delivery through
+		// the real lifecycle emitter, not a repeated Promise settlement.
+		const duplicate = spawnEpoch(h, parent, first.session, { events: [] })
+		await duplicate.ensureStarted
+
+		first.settle('max-tokens')
+		await settleAsync()
+		assert.equal(
+			h.root.get('sessionPersistence').inspectCalls.length,
+			1,
+			'the first recovery decision started and is parked in the durable inspection',
+		)
+
+		duplicate.settle('max-tokens')
+		await settleAsync()
+
+		// Release the pending decision; exactly one continuation goes out.
+		releaseInspect()
+		await settleAsync()
+
+		assert.equal(h.followupCalls.length, 1, 'exactly one child followup() is attempted')
+		assert.deepEqual(
+			parent.calls,
+			[],
+			'the duplicate original end event alone emits no parent failure notice',
+		)
+
+		// A genuinely LATER activation — after the delivered continuation —
+		// fails again: exactly one parent notice and never a second continuation.
+		const second = spawnEpoch(h, parent, first.session, {
+			events: [turnEnd({ kind: 'max-tokens' }, 2)],
+		})
+		await second.ensureStarted
+		second.settle('max-tokens')
+		await settleAsync()
+
+		assert.equal(h.followupCalls.length, 1, 'never continued twice')
+		assert.equal(parent.calls.length, 1, 'the genuine repeat failure notifies once')
+		const text = parent.calls[0].message.content[0].text
+		assert.ok(text.includes(first.childId), 'notice names the child')
+		assert.ok(text.includes('max-tokens'), 'notice reports the repeat failure class')
+
+		// Any further failing epoch stays silent (notice capped once per chain).
+		const third = spawnEpoch(h, parent, first.session, {
+			events: [turnEnd({ kind: 'max-tokens' }, 3)],
+		})
+		await third.ensureStarted
+		third.settle('max-tokens')
+		await settleAsync()
+		assert.equal(h.followupCalls.length, 1)
+		assert.equal(parent.calls.length, 1)
+	})
+
 	test(`[${artifact.id}] AC10: failed followup keeps the chain engaged without a second attempt`, async (t) => {
 		const h = await makeHost(t)
 		await h.root.plugin(await artifact.load())
