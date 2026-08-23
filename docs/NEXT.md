@@ -1,45 +1,42 @@
-# NEXT — verify an explicit durability checkpoint before cold resume
+# NEXT — resolve a production-grade real AbortSignal, then patch checkpoint-before-followup
 
-Status: v0.1 product code is unchanged and live-blocked on `@deepseek-ai/dsh` 0.1.1-rc.2. Two recovery paths are now ruled out by live evidence:
+Status: the §10 live probe passed all six criteria. The durability gap is closed by one official `ctx.sessions.flush(childSession)` checkpoint started from the terminal session event, followed after settlement + checkpoint resolution by official `subagents.followup()`. The product code has **not** yet been updated to this sequence.
 
-1. `subagent/end` → immediate official `subagents.followup()` fails with `NOT_RESUMABLE` because the freshly settled child is no longer live and its physical log has not yet caught up (`DSH-SEAMS.md` §8).
-2. `session/event: turn/end` → synchronous live `Agent.followup()` cannot enqueue because inbox mutation performs a nested session append and hits the session reentrancy guard (`DSH-SEAMS.md` §9).
+One blocker remains before implementation: `subagents.followup(..., { signal })` must receive a **real `AbortSignal`**. The current sandbox fallback in `neverAbortSignal()` is a duck-typed object; live cold resume proved that `AbortSignal.any()` inside `agents.resume()` rejects it.
 
-Do not modify product code yet. Do not add timers, polling, custom persistence, private runtime APIs, or another LLM.
+Do not publish yet. Do not add timers, polling, custom persistence, private runtime APIs, or another LLM.
 
-## One remaining clean seam to test
+## Current blocking question
 
-Test whether an explicit **official durability checkpoint** can close the §8 gap without changing the product contract.
+Find the smallest official, production-available source of a real `AbortSignal` that an ordinary installed Watchdog plugin can use for the asynchronous recovery operation **without requiring a model/tool call or human interaction**.
 
-Relevant public runtime facts to verify on the installed host before probing:
+Before changing product code, inspect the installed runtime and verify the exact source. Do not infer names or contracts.
 
-- `session/event` receives the live `Session` object after the event is committed.
-- `ctx.sessions.flush(session)` is the public awaited durability checkpoint.
-- the first-party persistence backend treats a requested `session/flush` as an immediate quiescence barrier for buffered writes.
+The chosen signal must satisfy all of these:
 
-Hypothesis:
+1. It is a genuine host-realm `AbortSignal`, accepted by the same `AbortSignal.any()` path used by cold resume.
+2. It is available to normal plugin execution/event handling; it must not depend on capturing a signal from a temporary diagnostic/model tool call.
+3. It remains valid and non-aborted across the required async window: terminal `session/event` → `sessions.flush()` resolution → `subagent/end` settlement → `subagents.followup()` admission.
+4. Its cancellation semantics are appropriate for plugin teardown. If the plugin/session/runtime is disposed, cancellation is acceptable; it must not abort merely because the originating event callback returned.
+5. It comes from a public/official Cordis/DSH seam or standard host primitive available in the packaged plugin environment. No duck typing, no private fields, no global monkey patch.
 
-> When a continuable child reaches its terminal turn while its Session is still live, start exactly one `ctx.sessions.flush(childSession)` checkpoint. Do **not** enqueue work inside the `session/event` callback. After the child settles and the checkpoint has resolved, call the existing official `subagents.followup()` seam. If the checkpoint made the descriptor durable, cold resume should now succeed using the same durable child id.
+## If a valid signal source is verified
 
-This is intentionally different from the ruled-out §9 path: `flush()` is a durability barrier, not an inbox/session append, and the actual follow-up happens only after the append dispatch has finished.
+Then implement the smallest redesign:
 
-## Probe first; no product patch
+1. On a continuable child's first `turn/end { reason.kind: 'max-tokens' }`, start exactly one official `ctx.sessions.flush(childSession)` checkpoint while the Session is live. Do not enqueue or follow up from inside the event callback.
+2. Preserve the existing continue-once/idempotency guard semantics.
+3. On the matching `subagent/end`, await the recorded checkpoint, then perform the restart-safe durable marker check and call official `subagents.followup()` once with the verified real signal.
+4. If the checkpoint fails, the child cannot be verified as continuable, or followup fails, do not retry automatically; notify the parent once and stop.
+5. If the recovery activation later ends in `max-tokens` or explicit error, notify once and never continue again.
+6. Remove the invalid duck-typed `neverAbortSignal()` fallback; do not retain dead compatibility code.
+7. Regenerate `plugin/watchdog.host.js` from the source artifact and keep both artifacts byte/behavior aligned.
+8. Extend tests to cover at least: checkpoint success, checkpoint rejection, duplicate terminal/end delivery while checkpoint is pending, restart marker behavior, real-signal plumbing at the official followup boundary, and no second continuation.
+9. Run the full suite against both artifacts.
+10. Update `AGENTS.md`, `DSH-SEAMS.md`, and this file with the exact implementation evidence; commit and push.
 
-Use a disposable dynamic probe on the `cordis` preset. Prefer a cheap continuable child that completes quickly if the persistence/cold-resume mechanics are independent of stop reason; only burn another 32,768-token max-tokens child if needed to disambiguate behavior.
-
-The probe must establish all of the following:
-
-1. calling `ctx.sessions.flush(session)` from the terminal `session/event` observation is admitted and does not hit the append reentrancy guard;
-2. the flush promise resolves;
-3. after settlement, `sessionPersistence.inspect(childId)` / the physical log contains the continuable descriptor needed by `coldResume`;
-4. one official `subagents.followup(parent, childId, …)` after that flush succeeds;
-5. the child resumes under the **same durable session id** in a new activation epoch;
-6. no timer, polling loop, custom storage, or private API is required.
-
-If any of these fail, stop and document the discrepancy. Do not patch around it.
-
-If all pass, record the evidence in `DSH-SEAMS.md`, commit/push, and only then redesign the v0.1 implementation around the checkpoint-before-followup sequence and run one final real max-tokens end-to-end acceptance test.
+Do **not** run the expensive final real `max-tokens` end-to-end acceptance test in this step. Stop after the redesigned implementation is green locally and pushed so it can be reviewed before the final live burn.
 
 ## Kill condition
 
-If the explicit official flush barrier cannot make immediate cold resume reliable, stop pursuing automatic max-token recovery for v0.1 on this runtime. Do not degrade into a notification-only plugin: native DSH already reports these terminal outcomes. At that point document the upstream runtime limitation and reconsider the product rather than adding timing heuristics.
+If no production-available real `AbortSignal` source satisfying the five criteria exists in the normal plugin execution path, stop and document that limitation. Do not work around it with a fake signal, timer, polling loop, private API, or interactive tool-call dependency. Reconsider the product boundary instead.
