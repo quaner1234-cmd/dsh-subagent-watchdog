@@ -77,6 +77,20 @@ Validation:
 9. Verify the PR exists and inspect its changed-file list. If CI starts promptly, read its result; do not bypass failed checks. If CI or a maintainer requests changes, STOP and report the exact request rather than changing product code or widening claims autonomously.
 10. Record the PR URL, branch/commit, changed-file scope, and current CI status in this file, commit/push that documentation update to this repository, then STOP.
 
+## Completed ecosystem submission record (2026-08-24)
+
+The authorized `awesome-dsh-plugin` submission was executed per the steps above and is complete. No product code, npm metadata, tags, or releases changed.
+
+- Upstream rules re-read from `awesome-dsh-plugin/awesome-dsh-plugin@main` (`ca57824`): no material change vs. the summary above — one YAML entry, same gates, same regeneration commands, `workflow` still a valid category. New clarifications (max 3 entries/PR; accuracy review) are satisfied.
+- Gates re-verified live: public/not archived; created `2026-08-23T02:38:54Z`; 26 commits; remote `package.json` declares `dsh.bundle.patch`; topics include `dsh-plugin`; npm latest = `0.1.0` with matching `gitHead` and repository backlink; no pre-existing entry for this repo.
+- Duplicate scan over all 2016 existing entries: closest entries (`Frog755/dsh-client-auto-retry`, `haochi72/dsh-auto-continue-429`, `HsiangNianian/dsh-auto-continue`, `shengyvself/dsh-autoresume`) target client/web turns or rate-limit/restart triggers with capped retry loops — none fully covers "native continuable subagent + max-tokens trigger + exactly once". Proceeded per rule 3.
+- Fork: `https://github.com/quaner1234-cmd/awesome-dsh-plugin` (created and synced to upstream `main` `ca578248deeaaab94393cf4b9f20bbd5fc97c118`). Branch: `add-quaner1234-cmd__dsh-subagent-watchdog`; head commit `a1a731fcfe34283b3ea648fb9fb944dbeea79a2f` (single commit).
+- Entry added byte-for-byte as specified in step 6: `data/plugins/quaner1234-cmd__dsh-subagent-watchdog.yml`.
+- Local checks from the fork checkout: `npm ci` clean; `node scripts/generate-readme.mjs` regenerated both READMEs (2017 entries); upstream's own gate `node scripts/check-submission.mjs --base ca57824` → all checked entries pass.
+- PR: **https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/2964** (`OPEN`, base `main`, title `Add quaner1234-cmd/dsh-subagent-watchdog (workflow)`).
+- Changed-file scope verified via the API: exactly 3 files, `+8/-0` — `data/plugins/quaner1234-cmd__dsh-subagent-watchdog.yml` (added, +6), `README.md` (+1), `README.zh.md` (+1), the two README lines being pure generator output. Zero modifications to existing entries.
+- CI status observed 2026-08-24T03:25Z on head `a1a731f`: `check` (pr-check.yml) = success; `Submission gate` (pr-gate.yml) = success.
+
 ## Hard stop conditions
 
 - Upstream contribution rules materially changed => STOP.
